@@ -23,6 +23,8 @@ CREATE TABLE messages (
     role            TEXT NOT NULL,          -- user | assistant | tool_result
     content         TEXT NOT NULL,
     tool_call_id    TEXT,                   -- non-null for role='tool_result'
+    tool_calls      JSONB,                  -- non-null for assistant rows that called tools
+    is_error        BOOLEAN DEFAULT FALSE,  -- only meaningful on tool_result rows
     token_count     INTEGER DEFAULT 0,
     created_at      TIMESTAMPTZ DEFAULT now()
 );
