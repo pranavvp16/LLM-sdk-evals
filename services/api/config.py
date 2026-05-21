@@ -93,14 +93,23 @@ class Settings(BaseSettings):
         urls: dict[str, str] = {}
         if self.vllm_base_url:
             urls["vllm"] = self.vllm_base_url.rstrip("/")
-        if self.opencode_zen_base_url:
-            urls["opencode"] = self.opencode_zen_base_url.rstrip("/")
-        if self.opencode_go_base_url:
-            urls["opencode-go"] = self.opencode_go_base_url.rstrip("/")
+        if self.opencode_api_key:
+            if self.opencode_zen_base_url:
+                urls["opencode"] = self.opencode_zen_base_url.rstrip("/")
+            if self.opencode_go_base_url:
+                urls["opencode-go"] = self.opencode_go_base_url.rstrip("/")
         return urls
 
+    _OSS_PROVIDERS: frozenset[str] = frozenset(
+        {"vllm", "opencode", "opencode-go", "huggingface"}
+    )
+
     def resolve_oss(self) -> tuple[str, str]:
-        """Return (provider, model_id) for CLI eval OSS side."""
+        """Return (provider, model_id) for CLI eval OSS side.
+
+        Defaults to HuggingFace so `python eval/run_eval.py` works out of the box
+        with only HUGGINGFACE_API_KEY. Set OSS_PROVIDER to pick vLLM or OpenCode.
+        """
         defaults: dict[str, str] = {
             "vllm": self.vllm_model,
             "opencode": self.opencode_zen_model,
@@ -108,12 +117,14 @@ class Settings(BaseSettings):
             "huggingface": "qwen2.5-0.5b-instruct",
         }
         if self.oss_provider:
-            return self.oss_provider, self.oss_model or defaults.get(
-                self.oss_provider, self.vllm_model
-            )
-        if self.vllm_base_url:
-            return "vllm", self.vllm_model
-        return "huggingface", "qwen2.5-0.5b-instruct"
+            provider = self.oss_provider.strip()
+            if provider not in self._OSS_PROVIDERS:
+                allowed = ", ".join(sorted(self._OSS_PROVIDERS))
+                raise ValueError(
+                    f"Invalid OSS_PROVIDER={provider!r}; must be one of: {allowed}"
+                )
+            return provider, self.oss_model or defaults[provider]
+        return "huggingface", defaults["huggingface"]
 
     def asyncpg_dsn(self) -> str:
         """asyncpg does not accept the SQLAlchemy '+asyncpg' suffix."""

@@ -126,8 +126,8 @@ python eval/report.py       # → docs/eval_report.pdf
 ```
 
 Set `VLLM_BASE_URL` + `VLLM_API_KEY` when self-hosting Qwen via vLLM for chat
-or the `/compare` UI — the eval runner currently calls the OSS model through
-HuggingFace only (`eval/run_eval.py`).
+or `/compare`. CLI eval defaults to HuggingFace; set `OSS_PROVIDER=vllm` (or
+`opencode` / `opencode-go`) to switch the OSS side in `eval/run_eval.py`.
 
 ---
 
