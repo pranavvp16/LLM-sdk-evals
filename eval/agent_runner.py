@@ -176,7 +176,12 @@ async def run_trajectory(
     per_hop_timeout_s: float = PER_HOP_TIMEOUT_S,
     temperature: float = 0.2,
     max_tokens: int = 1024,
-    thinking: bool | int | None = True,
+    # Default off because Anthropic thinking blocks carry a per-block
+    # `signature` that must be replayed on the next hop, and the SDK's
+    # AssistantMessage shape does not currently capture/roundtrip it.
+    # Multi-hop frontier calls with thinking=True fail at hop 2. Callers
+    # can opt back in explicitly once signature roundtripping lands.
+    thinking: bool | int | None = None,
 ) -> Trajectory:
     """Run one agent prompt end-to-end and return the captured trajectory.
 
