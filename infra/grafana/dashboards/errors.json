@@ -1,0 +1,38 @@
+{
+  "uid": "errors",
+  "title": "Inference errors",
+  "tags": ["ollive"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Error rate by provider",
+      "gridPos": { "x": 0, "y": 0, "w": 24, "h": 8 },
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "ClickHouse" },
+      "targets": [
+        {
+          "refId": "A",
+          "rawSql": "SELECT toStartOfMinute(started_at) AS t, provider, sum(status = 'error') / count() AS error_rate FROM inference_logs WHERE $__timeFilter(started_at) GROUP BY t, provider ORDER BY t"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "table",
+      "title": "Recent errors",
+      "gridPos": { "x": 0, "y": 8, "w": 24, "h": 10 },
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "ClickHouse" },
+      "targets": [
+        {
+          "refId": "A",
+          "rawSql": "SELECT started_at, provider, model, error_message FROM inference_logs WHERE status = 'error' AND $__timeFilter(started_at) ORDER BY started_at DESC LIMIT 50"
+        }
+      ]
+    }
+  ]
+}

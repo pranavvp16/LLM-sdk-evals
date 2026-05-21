@@ -1,0 +1,26 @@
+# Provisioned Grafana datasource — ClickHouse.
+# Requires the `grafana-clickhouse-datasource` plugin in the Grafana image.
+# See CLAUDE.md Task 6 for the dashboards that query this datasource.
+
+apiVersion: 1
+
+datasources:
+  - name: ClickHouse
+    type: grafana-clickhouse-datasource
+    access: proxy
+    isDefault: true
+    jsonData:
+      host: clickhouse
+      port: 9000
+      protocol: native
+      defaultDatabase: ollive
+      tlsSkipVerify: true
+    secureJsonData:
+      password: ""
+    editable: true
+
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    editable: true
