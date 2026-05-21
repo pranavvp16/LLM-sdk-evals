@@ -29,6 +29,7 @@ from sdk import (
     Context,
     LLMWrapper,
     TextContent,
+    ToolCall,
     ToolResult,
     ToolResultMessage,
     UserMessage,
@@ -89,6 +90,72 @@ def _sse(data: dict) -> bytes:
     return f"data: {json.dumps(data)}\n\n".encode("utf-8")
 
 
+def _rebuild_history(history: list[dict]) -> list:
+    """Reconstruct UserMessage / AssistantMessage / ToolResultMessage objects
+    from message rows in insertion order.
+
+    Anthropic's wire format requires the tool_result blocks that satisfy a
+    given assistant turn to live in one user-role message that follows it
+    immediately. We mirror that here by buffering consecutive tool_result
+    rows and flushing them on the next non-tool row.
+    """
+    out: list = []
+    pending_results: list[ToolResult] = []
+    # Populated from the most recent assistant row's tool_calls JSONB so
+    # replayed ToolResult objects carry the same name as live execution.
+    tool_names: dict[str, str] = {}
+
+    def flush_results() -> None:
+        nonlocal pending_results
+        if pending_results:
+            out.append(ToolResultMessage(results=pending_results))
+            pending_results = []
+
+    for m in history:
+        role = m["role"]
+        if role == "tool_result":
+            tc_id = m.get("tool_call_id") or ""
+            pending_results.append(
+                ToolResult(
+                    tool_call_id=tc_id,
+                    name=tool_names.get(tc_id, ""),
+                    content=m["content"],
+                    is_error=bool(m.get("is_error")),
+                )
+            )
+            continue
+
+        flush_results()
+
+        if role == "user":
+            tool_names = {}
+            out.append(UserMessage(content=m["content"]))
+        elif role == "assistant":
+            content_blocks: list = []
+            if m["content"]:
+                content_blocks.append(TextContent(text=m["content"]))
+            raw_calls = m.get("tool_calls") or []
+            tool_names = {tc["id"]: tc["name"] for tc in raw_calls}
+            tool_calls = [
+                ToolCall(id=tc["id"], name=tc["name"], arguments=tc["arguments"])
+                for tc in raw_calls
+            ]
+            out.append(AssistantMessage(content=content_blocks, tool_calls=tool_calls))
+
+    # Orphaned tool results (persisted before the model's follow-up hop
+    # finished) must not be replayed: flushing them here would place a
+    # ToolResultMessage immediately before the new UserMessage, producing
+    # consecutive user-role messages that Anthropic rejects. Strip the
+    # unanswered tool_calls from the trailing assistant turn instead.
+    if pending_results:
+        pending_results = []
+        if out and isinstance(out[-1], AssistantMessage) and out[-1].tool_calls:
+            last = out[-1]
+            out[-1] = AssistantMessage(content=last.content, tool_calls=[])
+
+    return out
+
+
 # ── routes ────────────────────────────────────────────────────────────────
 
 
@@ -134,17 +201,12 @@ async def chat_stream(
     except KeyError as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e)) from e
 
-    # History feeds back only the user/assistant text. Tool round-trips are
-    # transient and not replayed across requests (avoids reconstructing
-    # tool_use/tool_result block pairs from rows).
-    messages: list = []
-    for m in history:
-        if m["role"] == "user":
-            messages.append(UserMessage(content=m["content"]))
-        elif m["role"] == "assistant" and m["content"]:
-            messages.append(AssistantMessage(
-                content=[TextContent(text=m["content"])],
-            ))
+    # Rebuild full history including tool round-trips so the model can refer
+    # back to anything it called previously (event ids, weather it fetched,
+    # reminders it set, etc.). Anthropic requires tool_result blocks to
+    # immediately follow the assistant message that triggered them — we group
+    # consecutive tool_result rows after each assistant turn to satisfy that.
+    messages: list = _rebuild_history(history)
     messages.append(UserMessage(content=body.message))
 
     ctx = Context(
@@ -200,14 +262,26 @@ async def chat_stream(
                 cumulative_usage["output"] += usage.output_tokens
                 cumulative_usage["cost_usd"] += usage.cost_usd(model)
 
-                # Persist text content if present (intermediate or final).
-                if hop_text:
+                # Persist the assistant turn — both text content (if any) and
+                # the tool calls it issued. Even when hop_text is empty we
+                # still need a row so history replay can pair tool_calls with
+                # the tool_result rows that follow.
+                tool_calls_payload: list[dict] | None = (
+                    [
+                        {"id": tc.id, "name": tc.name, "arguments": tc.arguments}
+                        for tc in final_msg.tool_calls
+                    ]
+                    if final_msg.tool_calls
+                    else None
+                )
+                if hop_text or tool_calls_payload:
                     await pg.add_message(
                         pool,
                         conv_id,
                         role="assistant",
                         content=hop_text,
                         token_count=usage.output_tokens,
+                        tool_calls=tool_calls_payload,
                     )
 
                 # No tool calls → conversation turn is done.
@@ -236,6 +310,7 @@ async def chat_stream(
                         role="tool_result",
                         content=payload,
                         tool_call_id=tc.id,
+                        is_error=result["is_error"],
                     )
                     tool_results.append(ToolResult(
                         tool_call_id=tc.id,

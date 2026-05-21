@@ -8,6 +8,7 @@ transaction when they need to.
 from __future__ import annotations
 
 import hashlib
+import json
 from typing import Any, Optional
 from uuid import UUID
 
@@ -135,18 +136,27 @@ async def add_message(
     content: str,
     token_count: int = 0,
     tool_call_id: str | None = None,
+    tool_calls: list[dict[str, Any]] | None = None,
+    is_error: bool = False,
 ) -> dict[str, Any]:
     row = await pool.fetchrow(
         """
-        INSERT INTO messages (conversation_id, role, content, token_count, tool_call_id)
-        VALUES ($1, $2, $3, $4, $5)
-        RETURNING id, conversation_id, role, content, tool_call_id, token_count, created_at
+        INSERT INTO messages (
+            conversation_id, role, content, token_count,
+            tool_call_id, tool_calls, is_error
+        )
+        VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)
+        RETURNING id, conversation_id, role, content,
+                  tool_call_id, tool_calls, is_error,
+                  token_count, created_at
         """,
         conv_id,
         role,
         content,
         token_count,
         tool_call_id,
+        json.dumps(tool_calls) if tool_calls is not None else None,
+        is_error,
     )
     # touch the parent conversation so list ordering reflects activity
     await pool.execute(
@@ -159,11 +169,20 @@ async def add_message(
 async def list_messages(pool: asyncpg.Pool, conv_id: UUID) -> list[dict[str, Any]]:
     rows = await pool.fetch(
         """
-        SELECT id, conversation_id, role, content, tool_call_id, token_count, created_at
+        SELECT id, conversation_id, role, content,
+               tool_call_id, tool_calls, is_error,
+               token_count, created_at
         FROM messages
         WHERE conversation_id = $1
-        ORDER BY created_at ASC
+        ORDER BY created_at ASC, id ASC
         """,
         conv_id,
     )
-    return [dict(r) for r in rows]
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        d = dict(r)
+        # asyncpg returns jsonb as a string — parse so callers get a list[dict].
+        if isinstance(d.get("tool_calls"), str):
+            d["tool_calls"] = json.loads(d["tool_calls"])
+        out.append(d)
+    return out
