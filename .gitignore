@@ -1,0 +1,35 @@
+# env / secrets
+.env
+.env.local
+.env.*.local
+
+# python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.ruff_cache/
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+
+# node / next.js
+node_modules/
+.next/
+out/
+*.tsbuildinfo
+next-env.d.ts
+
+# editors / OS
+.idea/
+.vscode/
+.DS_Store
+
+# generated artefacts
+docs/eval_report.pdf
+eval/results.json
+*.log
+coverage.xml
+.coverage

@@ -1,0 +1,595 @@
+# CLAUDE.md
+
+The single authoritative spec for this repo. Read top-to-bottom before writing
+any code. Replaces the older `AGENTS.md` (now removed). If anything in code
+disagrees with this file, this file wins until updated.
+
+---
+
+## 1. What we're building
+
+An **LLM inference observability platform** plus the **AI personal assistant**
+that runs on top of it. Two deliverables, one repo, one `docker compose up`.
+
+**Part A — AI Personal Assistant + Evaluation**
+A multi-turn chatbot with short-term memory and a small set of mock daily-life
+tools (schedule call, update calendar, set reminder, etc.). The same UI talks
+to two models:
+
+- **OSS:** `qwen2.5-0.5b-instruct` — hosted separately on **vLLM** and exposed
+  via an OpenAI-compatible HTTP endpoint. The SDK already supports this — we
+  just pass `base_urls={"openai": "http://<vllm-host>/v1"}` and a registry
+  entry that points at it.
+- **Frontier:** `claude-sonnet-4-6` via Anthropic API.
+
+The assistants are evaluated on hallucination, bias, and safety using
+**LLM-as-judge** (Claude Sonnet scores both). The output is a 1-page PDF
+sent to `work@ollive.ai`.
+
+**Part B — Inference logging pipeline**
+Every LLM call the chatbot makes flows through `LLMWrapper`, which captures an
+`InferenceLog` and fires it at `POST /ingest/log`. From there: Redis Stream →
+async worker → ClickHouse → Grafana. Heavy raw payloads (if/when we keep them)
+land in MinIO. Prometheus scrapes FastAPI for service-level metrics.
+
+The chatbot is the application being observed. The pipeline is the
+observability. They share the same Postgres, the same Compose file, and the
+same SDK.
+
+---
+
+## 2. Architecture (matches the diagram in `docs/architecture.png`)
+
+```
+┌──────────── frontend ─────────────────────────────────────────┐
+│  Next.js chat UI       Eval dashboard       Side-by-side eval │
+│  (list/resume/cancel)  (live metrics)       (OSS vs Frontier) │
+└──────────────────────────────┬────────────────────────────────┘
+                               │ HTTP + SSE
+┌──────────────────────────── SDK (Python, DONE) ───────────────┐
+│  LLMWrapper                                                   │
+│  ├─ Multi-provider  (Anthropic, OpenAI/vLLM/Ollama, Google)   │
+│  ├─ Streaming SSE   (token-by-token + tool_call events)       │
+│  ├─ Metadata        (latency, tokens, cost, stop_reason)      │
+│  └─ PII redact      (email/phone/SSN/CC before logging)       │
+└──────────────────────────────┬────────────────────────────────┘
+                               │ fire-and-forget POST /ingest/log
+┌──────────────────────────── ingestion ────────────────────────┐
+│  FastAPI /ingest/log   →  Redis Streams (buffer/queue)        │
+│                              │                                │
+│                              ▼                                │
+│                       Async worker (validate, enrich, retry)  │
+└────────────────┬─────────────────────────────┬────────────────┘
+                 │                             │
+┌── storage ─────┼─────────────────────────────┼────────────────┐
+│  PostgreSQL    ClickHouse                    MinIO (S3)       │
+│  conversations inference_logs                raw payloads /   │
+│  messages      (columnar, OLAP)              exports          │
+│  sessions                                                     │
+└────────────────┬─────────────────────────────┬────────────────┘
+                 │                             │
+┌── observe ─────▼─────────────────────────────▼────────────────┐
+│  Grafana            Prometheus           Eval report PDF      │
+│  latency/throughput error rate / p95     hallucination / bias │
+│                     alerts               / safety             │
+└───────────────────────────────────────────────────────────────┘
+```
+
+**Why this shape:**
+
+- **Redis between API and ClickHouse:** `POST /ingest/log` returns in microseconds
+  no matter what ClickHouse is doing. If ClickHouse is slow / restarting, logs
+  queue up and replay. The chat path is never affected.
+- **Postgres vs ClickHouse split:** conversations/messages have foreign keys,
+  joins, soft-deletes — Postgres. Inference logs are append-only time-series
+  with billion-row aggregation queries (`p95 latency by provider`) — ClickHouse.
+- **MinIO:** for things too big or too unstructured for either DB — full request
+  payloads (debugging), exported eval bundles, snapshots. Optional in Tasks 1–6,
+  wired in Task 5.
+- **PII boundary at the SDK:** nothing downstream of `sdk/pii.py` ever sees raw
+  user input. Ingestion, ClickHouse, dashboards all trust the log is clean.
+
+---
+
+## 3. Hard rules
+
+- **Treat `sdk/` as frozen, with one narrow exception.** The 18/18 SDK test
+  suite must keep passing — no API changes, no refactors, no feature additions.
+  The single exception is **provider bug-fixes that are required to make real
+  LLM calls work**: the `tests/conftest.py` fake provider can mask wire-protocol
+  mistakes against real APIs (the Anthropic `stream=True` bug was one such
+  case). Such fixes must be minimal, must keep the existing tests green, and
+  must be called out in the commit message. Never modify `tests/test_sdk.py`.
+  All LLM calls go through `LLMWrapper`. Never import `anthropic`, `openai`, or
+  `google-generativeai` outside `sdk/providers/`.
+- **Async everywhere.** FastAPI routes are `async def`. Use `asyncpg` for
+  Postgres, `redis.asyncio` for Redis, `asyncio.to_thread(...)` to wrap the
+  synchronous `clickhouse-driver`. Never use `requests` — use `httpx` or
+  `aiohttp`.
+- **Parameterised SQL only.** No f-string SQL. asyncpg uses `$1, $2, ...`.
+- **Secrets from env vars only.** `services/api/config.py` (pydantic-settings)
+  for Python, `process.env` / `NEXT_PUBLIC_*` for TypeScript. Never hardcode.
+- **PII redacted in the SDK, never downstream.** `InferenceLog.input_preview`
+  and `.output_preview` are already clean. Don't redact again, don't log raw
+  user input elsewhere.
+- **Ingestion must never block the chat path.** `POST /ingest/log` returns in
+  < 5 ms by `XADD`ing to Redis and returning. Heavy work happens in the worker.
+  If Redis or ClickHouse is down, the chat keeps working.
+- **IPs are SHA-256 hashed before storage.** Never store raw IPs.
+- **No MCP.** Tool calling is in-process via a small `ToolRegistry` (see §6).
+
+---
+
+## 4. Repo layout
+
+```
+ollive-assignment/
+├── CLAUDE.md                ← this file (single spec)
+├── docker-compose.yml
+├── .env.example
+├── requirements.txt
+│
+├── sdk/                     ← DONE — DO NOT MODIFY
+│   ├── types.py             canonical: StreamEvent, InferenceLog, Message, ModelDef, ToolCall
+│   ├── registry.py          model catalog (Anthropic, OpenAI, Google, Groq, DeepSeek, Ollama, HF, vLLM)
+│   ├── normalize.py         Context → provider wire format, incl. tool schemas
+│   ├── pii.py               email/phone/SSN/CC redaction
+│   ├── wrapper.py           LLMWrapper.stream() / .complete(), fires InferenceLog
+│   └── providers/{anthropic,openai,google}_provider.py
+│
+├── services/
+│   ├── api/                                FastAPI backend
+│   │   ├── main.py                         app factory + lifespan
+│   │   ├── config.py                       pydantic-settings
+│   │   ├── deps.py                         pool / redis / wrapper / registry deps
+│   │   ├── routers/
+│   │   │   ├── chat.py                     SSE streaming + conversation CRUD + tool loop
+│   │   │   ├── ingest.py                   POST /ingest/log → Redis XADD
+│   │   │   ├── health.py
+│   │   │   └── eval.py                     GET /eval/summary, /eval/compare for the side-by-side UI
+│   │   ├── tools/                          in-process tool calling (no MCP)
+│   │   │   ├── registry.py                 Tool dataclass + ToolRegistry
+│   │   │   ├── executor.py                 run tool_calls, build ToolResultMessage
+│   │   │   └── builtins.py                 mock daily-assistant tools
+│   │   ├── ingestion/
+│   │   │   ├── validator.py                Pydantic v2 mirror of InferenceLog
+│   │   │   ├── enricher.py                 cost recalc, session linking, clamping
+│   │   │   └── worker.py                   XREADGROUP → ClickHouse batch insert + DLQ
+│   │   ├── db/
+│   │   │   ├── postgres.py                 asyncpg pool + query functions
+│   │   │   ├── clickhouse.py               clickhouse-driver via asyncio.to_thread
+│   │   │   ├── s3.py                       MinIO/boto3 helpers (raw payloads, exports)
+│   │   │   └── migrations/
+│   │   │       ├── 001_postgres.sql
+│   │   │       └── 001_clickhouse.sql
+│   │   └── observability/
+│   │       └── metrics.py                  Prometheus instrumentation (extra app counters)
+│   │
+│   └── chatbot/                            Next.js 14 App Router UI
+│       ├── app/
+│       │   ├── page.tsx                    conversation list
+│       │   ├── chat/[id]/page.tsx          streaming chat + tool result rendering
+│       │   ├── dashboard/page.tsx          metrics overview (Grafana iframes)
+│       │   └── compare/page.tsx            side-by-side OSS vs Frontier eval view
+│       ├── components/
+│       └── lib/api.ts                      typed fetch client + Zod schemas
+│
+├── eval/                                   the Part A deliverable
+│   ├── prompts.py                          30 prompts (10 factual / 10 adversarial / 10 bias)
+│   ├── judge.py                            LLM-as-judge scorer (Sonnet)
+│   ├── run_eval.py                         orchestrator, writes results.json
+│   └── report.py                           writes docs/eval_report.pdf
+│
+├── infra/
+│   ├── prometheus.yml
+│   ├── vllm/                               docker-compose override for local vLLM (optional)
+│   └── grafana/
+│       ├── provisioning/datasources/clickhouse.yml
+│       └── dashboards/{latency,throughput,errors}.json
+│
+├── tests/
+│   ├── test_sdk.py                         DONE — 18/18 passing — DO NOT BREAK
+│   ├── test_chat.py
+│   ├── test_ingest.py
+│   ├── test_tools.py                       registry + executor unit tests
+│   └── conftest.py                         shared fixtures
+│
+├── scripts/
+│   ├── run_migrations.py
+│   └── seed_db.py
+│
+└── docs/
+    ├── architecture.png                    the diagram referenced in §2
+    └── eval_report.pdf                     generated by eval/report.py
+```
+
+---
+
+## 5. Provider configuration (incl. vLLM-hosted OSS)
+
+The OSS model is hosted externally (vLLM container, Modal endpoint, etc.) and
+exposed as **OpenAI-compatible**. We do not run inference inside this repo.
+The SDK already supports this pattern:
+
+```python
+wrapper = LLMWrapper(
+    api_keys={
+        "anthropic": settings.anthropic_api_key,
+        "openai": settings.openai_api_key,
+        "vllm": settings.vllm_api_key or "EMPTY",
+    },
+    base_urls={
+        "vllm": settings.vllm_base_url,       # e.g. https://qwen.<host>/v1
+    },
+    ingestion_url="http://api:8000/ingest/log",
+)
+
+model = get_model("vllm", "qwen2.5-0.5b-instruct")  # registry entry, openai-compatible
+```
+
+**Env vars (add to `.env.example`):**
+
+```
+VLLM_BASE_URL=http://localhost:8001/v1
+VLLM_API_KEY=EMPTY                # vLLM accepts any non-empty bearer token by default
+VLLM_MODEL=qwen2.5-0.5b-instruct
+```
+
+For local dev without a vLLM server, fall back to a HuggingFace Inference API
+key (same registry entry kind — `openai-compatible`). For tests, never call
+either — use the fake provider in `tests/conftest.py`.
+
+---
+
+## 6. Tool calling (no MCP)
+
+Native, in-process function calling. Tools are plain Python callables wrapped
+in a `Tool` dataclass and registered at startup. The SDK already normalises
+provider-agnostic tool schemas → Anthropic `tools`, OpenAI `tools`, Google
+`function_declarations`. We just need a registry and an executor on top.
+
+### 6.1 The `Tool` and `ToolRegistry`
+
+```python
+# services/api/tools/registry.py
+from dataclasses import dataclass
+from typing import Callable, Any
+import inspect, asyncio
+
+@dataclass
+class Tool:
+    name: str
+    description: str
+    parameters: dict   # JSON Schema for arguments
+    handler: Callable[..., Any]
+
+    def schema(self) -> dict:
+        # Matches sdk/normalize.py expectations: {name, description, parameters}
+        return {"name": self.name, "description": self.description, "parameters": self.parameters}
+
+class ToolRegistry:
+    def __init__(self) -> None:
+        self._tools: dict[str, Tool] = {}
+
+    def register(self, tool: Tool) -> None:
+        self._tools[tool.name] = tool
+
+    def schemas(self) -> list[dict]:
+        return [t.schema() for t in self._tools.values()]
+
+    async def call(self, name: str, args: dict) -> Any:
+        tool = self._tools[name]
+        if inspect.iscoroutinefunction(tool.handler):
+            return await tool.handler(**args)
+        return await asyncio.to_thread(tool.handler, **args)
+```
+
+A single `ToolRegistry` instance lives on `app.state.tools`, populated in the
+lifespan with all `builtins.py` tools. `deps.tools_registry` injects it.
+
+### 6.2 Mock daily-assistant tools (`builtins.py`)
+
+All five return **deterministic mock data** — no external integration. They
+exist so the model has something realistic to call, so the eval can probe
+tool use, and so the UI can render tool cards. Schemas are JSON Schema draft-07
+because that's what all three providers accept.
+
+| Tool | Purpose | Returns |
+|---|---|---|
+| `schedule_call` | book a call with someone | `{event_id, participant, when, duration_min, link}` |
+| `update_calendar` | move/edit an existing event | `{event_id, when, notes, status: "updated"}` |
+| `list_calendar` | list events in a date range | `[{event_id, title, when, participant}]` (3 mocks) |
+| `set_reminder` | one-shot reminder | `{reminder_id, text, when, status: "scheduled"}` |
+| `get_weather` | weather at a location | `{location, temp_c, condition, source: "mock"}` |
+
+Example registration:
+
+```python
+def schedule_call(participant: str, when: str, duration_min: int = 30) -> dict:
+    return {
+        "event_id": f"evt_{uuid.uuid4().hex[:8]}",
+        "participant": participant,
+        "when": when,
+        "duration_min": duration_min,
+        "link": "https://meet.example/mock",
+    }
+
+registry.register(Tool(
+    name="schedule_call",
+    description="Schedule a call with a participant at a specific ISO-8601 time.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "participant": {"type": "string", "description": "Name or email."},
+            "when": {"type": "string", "description": "ISO-8601 datetime."},
+            "duration_min": {"type": "integer", "minimum": 5, "maximum": 240, "default": 30},
+        },
+        "required": ["participant", "when"],
+    },
+    handler=schedule_call,
+))
+```
+
+### 6.3 The chat loop with tools
+
+`routers/chat.py` calls `LLMWrapper.stream()` with `Context.tools=registry.schemas()`.
+After the stream yields `done`, inspect `event.message.tool_calls`:
+
+```python
+ctx = Context(system_prompt=SYSTEM, messages=history, tools=tools_registry.schemas())
+
+for _ in range(MAX_TOOL_HOPS):           # cap at 5 to prevent loops
+    final_msg: AssistantMessage | None = None
+    async for event in wrapper.stream(model, ctx, session_id=sid, conversation_id=cid):
+        if event.type == "text_delta":
+            yield sse({"type": "text_delta", "delta": event.delta})
+        elif event.type == "tool_call_end":
+            yield sse({"type": "tool_call", "id": event.tool_call.id,
+                       "name": event.tool_call.name, "args": event.tool_call.arguments})
+        elif event.type == "done":
+            final_msg = event.message
+
+    if not final_msg or not final_msg.tool_calls:
+        break
+
+    # Execute every tool call in parallel, then feed results back as a new turn.
+    results = await asyncio.gather(*[
+        tools_registry.call(tc.name, tc.arguments) for tc in final_msg.tool_calls
+    ])
+    for tc, result in zip(final_msg.tool_calls, results):
+        yield sse({"type": "tool_result", "id": tc.id, "result": result})
+
+    ctx.messages.append(final_msg)
+    ctx.messages.append(ToolResultMessage(results=[
+        ToolResult(tool_call_id=tc.id, content=json.dumps(result))
+        for tc, result in zip(final_msg.tool_calls, results)
+    ]))
+
+yield "data: [DONE]\n\n"
+```
+
+Persist the assistant message and each tool result into Postgres `messages`
+with `role IN ('assistant', 'tool_result')` so the conversation can be
+replayed.
+
+### 6.4 SSE wire format (extended for tools)
+
+```
+data: {"type": "text_delta", "delta": "Booking your call now…"}\n\n
+data: {"type": "tool_call", "id": "tc_1", "name": "schedule_call",
+       "args": {"participant": "Ankur", "when": "2026-05-22T15:00:00Z"}}\n\n
+data: {"type": "tool_result", "id": "tc_1",
+       "result": {"event_id": "evt_a1b2c3d4", "link": "https://meet.example/mock"}}\n\n
+data: {"type": "text_delta", "delta": "Done. The call is on the calendar."}\n\n
+data: {"type": "done", "usage": {"input": 142, "output": 38, "cost_usd": 0.00021}}\n\n
+data: [DONE]\n\n
+```
+
+The frontend renders `tool_call` and `tool_result` as inline cards between
+assistant text bubbles.
+
+---
+
+## 7. Database schemas
+
+### Postgres (relational)
+
+```sql
+CREATE TABLE sessions (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_agent  TEXT,
+    ip_hash     TEXT,
+    created_at  TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE TABLE conversations (
+    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    session_id   UUID REFERENCES sessions(id),
+    title        TEXT DEFAULT '',
+    provider     TEXT NOT NULL,
+    model        TEXT NOT NULL,
+    status       TEXT DEFAULT 'active',
+    created_at   TIMESTAMPTZ DEFAULT now(),
+    updated_at   TIMESTAMPTZ DEFAULT now(),
+    cancelled_at TIMESTAMPTZ
+);
+
+CREATE TABLE messages (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    conversation_id UUID REFERENCES conversations(id) ON DELETE CASCADE,
+    role            TEXT NOT NULL,        -- user | assistant | tool_result
+    content         TEXT NOT NULL,        -- JSON for tool_result; plain text otherwise
+    tool_call_id    TEXT,                 -- non-null only for role='tool_result'
+    token_count     INTEGER DEFAULT 0,
+    created_at      TIMESTAMPTZ DEFAULT now()
+);
+```
+
+### ClickHouse (analytical)
+
+```sql
+CREATE TABLE inference_logs (
+    trace_id            String,
+    session_id          String,
+    conversation_id     String,
+    provider            LowCardinality(String),
+    model               LowCardinality(String),
+    api_protocol        LowCardinality(String),
+    started_at          DateTime64(3),
+    ended_at            DateTime64(3),
+    latency_ms          Float64,
+    input_tokens        UInt32,
+    output_tokens       UInt32,
+    cache_read_tokens   UInt32,
+    cache_write_tokens  UInt32,
+    total_tokens        UInt32,
+    cost_usd            Float64,
+    input_preview       String,
+    output_preview      String,
+    status              LowCardinality(String),
+    error_message       Nullable(String),
+    stop_reason         LowCardinality(String),
+    stream              Bool,
+    temperature         Nullable(Float32),
+    max_tokens          Nullable(UInt32),
+    date                Date DEFAULT toDate(started_at)
+) ENGINE = MergeTree()
+PARTITION BY toYYYYMM(date)
+ORDER BY (provider, started_at)
+TTL date + INTERVAL 90 DAY;
+```
+
+### MinIO (object storage)
+
+Two buckets, created on first run:
+
+- `ollive-raw/` — raw request/response payloads, keyed
+  `<yyyy>/<mm>/<dd>/<trace_id>.json`. Writes here are **opt-in**: set
+  `INGEST_PERSIST_RAW=true` to enable. Off by default to avoid storing more
+  than we need.
+- `ollive-exports/` — eval bundles (`results.json` + `eval_report.pdf`),
+  Grafana snapshot exports, debug dumps.
+
+`services/api/db/s3.py` wraps `boto3` (sync) in `asyncio.to_thread`. Endpoint
+defaults to `http://minio:9000`, credentials from env.
+
+---
+
+## 8. Docker Compose services
+
+| service | image | port | purpose |
+|---|---|---|---|
+| postgres | `postgres:16-alpine` | 5432 | conversations, messages, sessions |
+| clickhouse | `clickhouse/clickhouse-server:24` | 8123, 9000 | inference_logs |
+| redis | `redis:7-alpine` | 6379 | ingestion queue |
+| minio | `minio/minio:latest` | 9000, 9001 | raw payloads, exports |
+| api | `./services/api` | 8000 | FastAPI backend |
+| chatbot | `./services/chatbot` | 3000 | Next.js UI |
+| prometheus | `prom/prometheus:v2` | 9090 | metrics scraping |
+| grafana | `grafana/grafana:11` | 3001 | dashboards |
+
+Startup order: `postgres + clickhouse + redis + minio` must be healthy before
+`api`. `api` runs `python scripts/run_migrations.py` before `uvicorn`.
+`chatbot` depends on `api`. vLLM is **not** in this compose by default — it's
+assumed external — but there's an `infra/vllm/docker-compose.override.yml`
+for local single-GPU dev.
+
+---
+
+## 9. Task order
+
+Work tasks in order. Don't start the next task until the current one's tests pass.
+
+| # | Task | Done when |
+|---|---|---|
+| 1 | FastAPI core (`main.py`, `config.py`, `deps.py`, `health.py`) | `uvicorn services.api.main:app` starts; `GET /health` → ok; `/metrics` returns Prom text |
+| 2 | Chat router + Postgres + SSE | `pytest tests/test_chat.py` passes; manual curl streams SSE; rows land in Postgres |
+| 3 | Ingestion pipeline (`/ingest/log` + Redis + worker + ClickHouse) | `pytest tests/test_ingest.py`; a chat call surfaces in ClickHouse within 2s |
+| 4 | **Tool calling** (registry + executor + mock builtins + chat-loop integration) | `pytest tests/test_tools.py`; model can call `schedule_call` and the UI renders the result card |
+| 5 | Next.js UI (list, chat with tool cards, dashboard, **side-by-side compare**) | `npm run dev` starts; can create/cancel/resume; `/compare` shows both models side-by-side |
+| 6 | Grafana dashboards + MinIO wiring + full Compose | `docker compose up` runs all 8 services green; dashboards populate after chatting |
+| 7 | Eval runner + PDF report (**Part A deliverable**) | `eval/run_eval.py` writes `results.json`; `eval/report.py` writes `docs/eval_report.pdf` |
+
+---
+
+## 10. Eval methodology (Task 7)
+
+Compare **Qwen2.5-0.5B (vLLM)** vs **Claude Sonnet 4** on three axes:
+hallucination, bias, safety. 30 prompts (10 factual / 10 adversarial / 10 bias).
+Judge is Claude Sonnet via `LLMWrapper`, scoring 0–5 on each axis with a strict
+JSON output rubric. Retry up to 3× on bad JSON; record `judge_failed` if it
+still won't parse.
+
+Run output: `eval/results.json` with 60 entries (30 × 2 models), each carrying
+response text, latency, tokens, cost, status, and the three judge scores.
+
+Report output: `docs/eval_report.pdf` — three pages:
+
+1. **Summary** — 4 metric cards (hallucination / bias / safety / cost), radar
+   chart, "use OSS when… / use Frontier when…" verdict.
+2. **Breakdown** — three grouped bar charts (one per category) + latency/cost
+   table including p95 and jailbreak fail rate.
+3. **Notable failures** — worst 5 responses per model, truncated to 150 chars,
+   with prompt id and scores.
+
+The full rubric and prompt template are in `eval/judge.py`. Don't rewrite them
+from memory — read that file.
+
+---
+
+## 11. SSE, sessions, frontend conventions
+
+- Session: frontend stores a UUID in `localStorage["ollive_session_id"]`,
+  sends it on every request as `X-Session-ID`. If missing, API generates one
+  and returns it in the response header.
+- Streaming: backend yields each `StreamEvent` from `LLMWrapper.stream()` as
+  `data: <json>\n\n`. Frontend uses `fetch` + `ReadableStream` (not
+  `EventSource`, because we need POST).
+- `InferenceLog` is sent to ingestion by the wrapper automatically — the route
+  handler does not touch logging.
+- TypeScript strict, no `any`, Zod for runtime validation, Tailwind only.
+
+---
+
+## 12. Running locally
+
+```bash
+cp .env.example .env
+# fill: ANTHROPIC_API_KEY, optional OPENAI_API_KEY, VLLM_BASE_URL (or HF fallback)
+
+docker compose up
+
+# http://localhost:3000   chatbot UI (chat, dashboard, /compare)
+# http://localhost:8000/docs   FastAPI swagger
+# http://localhost:3001   Grafana (admin/admin)
+# http://localhost:9090   Prometheus
+# http://localhost:9001   MinIO console
+```
+
+Tests run on the host, not in Docker:
+
+```bash
+pip install -r requirements.txt
+pytest -v
+```
+
+Eval (the deliverable):
+
+```bash
+python eval/run_eval.py     # → eval/results.json
+python eval/report.py       # → docs/eval_report.pdf
+```
+
+---
+
+## 13. What not to do
+
+- Don't modify `sdk/` or `tests/test_sdk.py`.
+- Don't call provider SDKs directly outside `sdk/providers/`.
+- Don't write synchronous DB calls in async FastAPI routes.
+- Don't store raw IPs or unredacted PII anywhere.
+- Don't block the chat path on logging — ingestion is fire-and-forget.
+- Don't introduce MCP, LangChain, or a tool-calling framework. The registry
+  in §6 is the whole thing.
+- Don't run real LLM calls in tests — use the fake provider in `conftest.py`.
+- Don't commit `.env`.
