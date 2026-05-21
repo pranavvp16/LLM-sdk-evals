@@ -3,8 +3,9 @@
 Multi-provider LLM chatbot + inference logging pipeline. Submission for the
 Ollive AI assignment (`work@ollive.ai`).
 
-A single `docker compose up` brings up the entire stack: chatbot UI, FastAPI
-backend, ingestion worker, Postgres, ClickHouse, Redis, Prometheus, Grafana.
+A single `docker compose up` brings up the core stack: chatbot UI, FastAPI
+backend, ingestion worker, Postgres, ClickHouse, Redis, Prometheus, and Grafana.
+(MinIO object storage is wired in Task 6 — see service table below.)
 
 > **Authoritative spec:** [`CLAUDE.md`](./CLAUDE.md) — full architecture
 > diagram, schema decisions, tool-calling design, and the eval rubric.
@@ -44,6 +45,8 @@ everything is ready.
 | Postgres       | `localhost:5432`                       | `ollive / ollive / ollive`         |
 | ClickHouse     | http://localhost:8123                  | HTTP interface                     |
 | Redis          | `localhost:6379`                       |                                    |
+| MinIO API      | http://localhost:9000                  | Task 6 — S3-compatible object storage |
+| MinIO console  | http://localhost:9001                  | Task 6 — web UI (`minioadmin` / preset) |
 
 ### Shut down
 
@@ -64,8 +67,9 @@ additional providers and the eval comparison.
 | `ANTHROPIC_API_KEY`    | yes      | Claude Sonnet / Haiku — default chat + judge     |
 | `OPENAI_API_KEY`       | no       | GPT models + OpenAI-compatible vLLM endpoint     |
 | `GOOGLE_API_KEY`       | no       | Gemini                                           |
-| `HUGGINGFACE_API_KEY`  | no       | Fallback OSS endpoint when no vLLM host is set   |
-| `VLLM_BASE_URL`        | no       | Self-hosted Qwen2.5-0.5B for the eval comparison |
+| `HUGGINGFACE_API_KEY`  | no       | OSS model for eval + HF Inference API fallback   |
+| `VLLM_BASE_URL`        | no       | Self-hosted Qwen2.5-0.5B (OpenAI-compatible)     |
+| `VLLM_API_KEY`         | no       | Bearer token for vLLM (`EMPTY` works by default) |
 | `POSTGRES_*`           | preset   | Defaults work out of the box                     |
 | `CLICKHOUSE_*`         | preset   | Defaults work out of the box                     |
 | `REDIS_URL`            | preset   | Defaults work out of the box                     |
@@ -105,15 +109,19 @@ keep passing.
 
 ## 5. Running the evaluation (Part A deliverable)
 
-The eval compares **Qwen2.5-0.5B (vLLM)** against **Claude Sonnet 4** on 30
-prompts across hallucination / bias / safety, judged by Sonnet, and emits a
-1-page PDF.
+The eval compares **Qwen2.5-0.5B (HuggingFace Inference API)** against
+**Claude Sonnet 4** on 30 prompts across hallucination / bias / safety, judged
+by Sonnet, and emits a **3-page PDF** (Summary, Breakdown, Notable Failures).
 
 ```bash
-# requires ANTHROPIC_API_KEY and either VLLM_BASE_URL or HUGGINGFACE_API_KEY
+# requires ANTHROPIC_API_KEY and HUGGINGFACE_API_KEY
 python eval/run_eval.py     # → eval/results.json
 python eval/report.py       # → docs/eval_report.pdf
 ```
+
+Set `VLLM_BASE_URL` + `VLLM_API_KEY` when self-hosting Qwen via vLLM for chat
+or the `/compare` UI — the eval runner currently calls the OSS model through
+HuggingFace only (`eval/run_eval.py`).
 
 ---
 
