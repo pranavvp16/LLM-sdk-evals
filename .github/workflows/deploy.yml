@@ -64,19 +64,11 @@ jobs:
     name: Deploy to VM
     needs: build
     runs-on: ubuntu-latest
-    if: ${{ vars.DEPLOY_HOST != '' || secrets.DEPLOY_HOST != '' }}
     steps:
-      - name: Resolve deploy host
-        id: host
-        run: |
-          host="${{ secrets.DEPLOY_HOST }}"
-          if [ -z "$host" ]; then host="${{ vars.DEPLOY_HOST }}"; fi
-          echo "host=$host" >> "$GITHUB_OUTPUT"
-
       - name: SSH into VM and roll out new images
         uses: appleboy/ssh-action@v1.2.0
         with:
-          host: ${{ steps.host.outputs.host }}
+          host: ${{ secrets.DEPLOY_HOST }}
           username: azureuser
           key: ${{ secrets.DEPLOY_SSH_KEY }}
           script_stop: true

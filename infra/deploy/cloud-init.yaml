@@ -26,6 +26,7 @@ write_files:
       OLLIVE_ANTHROPIC_API_KEY=__ANTHROPIC_API_KEY__
       OLLIVE_HF_TOKEN=__HF_TOKEN__
       OLLIVE_OPENCODE_API_KEY=__OPENCODE_API_KEY__
+      OLLIVE_GH_TOKEN=__GH_TOKEN__
       OLLIVE_ACR_LOGIN_SERVER=__ACR_LOGIN_SERVER__
       OLLIVE_ACR_USERNAME=__ACR_USERNAME__
       OLLIVE_ACR_PASSWORD=__ACR_PASSWORD__
@@ -70,9 +71,15 @@ write_files:
           usermod -aG docker azureuser || true
       fi
 
-      # -- Clone the repo ----------------------------------------------
-      git clone --branch "$OLLIVE_BRANCH" "$OLLIVE_REPO_URL" /opt/ollive/repo
+      # -- Clone the repo (use GH token for private repos) -------------
+      CLONE_URL="$OLLIVE_REPO_URL"
+      if [ -n "$OLLIVE_GH_TOKEN" ] && echo "$OLLIVE_REPO_URL" | grep -q "https://github.com"; then
+          CLONE_URL=$(echo "$OLLIVE_REPO_URL" | sed "s#https://github.com#https://x-access-token:${OLLIVE_GH_TOKEN}@github.com#")
+      fi
+      git clone --branch "$OLLIVE_BRANCH" "$CLONE_URL" /opt/ollive/repo
       cd /opt/ollive/repo
+      # Strip token from remote so it doesn't persist on disk
+      git remote set-url origin "$OLLIVE_REPO_URL"
       cp .env.example .env
 
       # -- Generate secrets + write deployment .env --------------------

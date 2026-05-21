@@ -15,8 +15,8 @@ eval report will recompute amortized $/1M output.
 from __future__ import annotations
 
 OSS_SELF_HOSTED: bool = False
-OSS_HARDWARE_COST_PER_HOUR_USD: float = 0.50    # Standard_E8s_v5 on-demand
-OSS_SKU: str = "Standard_E8s_v5 (CPU only — vLLM not running)"
+OSS_HARDWARE_COST_PER_HOUR_USD: float = 0.75    # Standard_L8aos_v4 on-demand
+OSS_SKU: str = "Standard_L8aos_v4 (CPU only — vLLM not running)"
 OSS_PRICING_NOTE: str = (
     "Deployment is CPU-only; OSS inference uses hosted OpenCode-Go. "
     "Per-token cost is taken from OpenCode pricing when populated in the SDK registry."
