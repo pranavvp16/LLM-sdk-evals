@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useCallback, useRef, useState } from "react";
+import { Suspense, useCallback, useRef, useState } from "react";
 
 import { EvalBrowser } from "../../components/eval/EvalBrowser";
 import { streamChat } from "../../lib/api";
@@ -62,6 +62,14 @@ const initial = (pick: ModelOption): ColumnState => ({
 });
 
 export default function ComparePage() {
+  return (
+    <Suspense fallback={<main className="mx-auto max-w-6xl p-6 text-sm text-neutral-500">Loading…</main>}>
+      <ComparePageInner />
+    </Suspense>
+  );
+}
+
+function ComparePageInner() {
   const search = useSearchParams();
   const router = useRouter();
   const view: View = isView(search.get("view")) ? (search.get("view") as View) : "live";
