@@ -209,8 +209,10 @@ ollive-assignment/
 ## 5. Provider configuration (OSS backends)
 
 OSS inference is **not** run inside this repo. Each backend is a separate
-registry provider id with an OpenAI-compatible wire format. `services/api/config.py`
-builds `api_keys` and `base_urls` for `LLMWrapper`:
+registry provider id with an OpenAI-compatible wire format. Catalog entries for
+`vllm` / `opencode` / `opencode-go` are registered at runtime via
+`services/api/oss_registry.py` (keeps frozen `sdk/registry.py` unchanged).
+`services/api/config.py` builds `api_keys` and `base_urls` for `LLMWrapper`:
 
 | Provider id   | Use case              | Key env                         | URL env (optional override)      |
 |---------------|-----------------------|---------------------------------|----------------------------------|

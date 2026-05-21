@@ -1,10 +1,15 @@
-"""Settings helpers for OSS provider selection (eval CLI)."""
+"""Settings helpers and runtime OSS model registration."""
 
 from __future__ import annotations
 
 import pytest
 
+from sdk.registry import get_model
+
 from services.api.config import Settings
+from services.api.oss_registry import register_oss_models
+
+register_oss_models()
 
 
 def test_resolve_oss_defaults_to_huggingface():
@@ -50,3 +55,22 @@ def test_base_urls_opencode_only_with_key():
     urls = s.base_urls()
     assert urls["opencode"] == "https://opencode.ai/zen/v1"
     assert urls["opencode-go"] == "https://opencode.ai/zen/go/v1"
+
+
+def test_oss_registry_vllm():
+    m = get_model("vllm", "qwen2.5-0.5b-instruct")
+    assert m.provider == "vllm"
+    assert m.api.value == "openai-completions"
+    assert m.supports_tools is False
+
+
+def test_oss_registry_opencode_zen():
+    m = get_model("opencode", "kimi-k2.5")
+    assert m.provider == "opencode"
+    assert m.api.value == "openai-completions"
+
+
+def test_oss_registry_opencode_go():
+    m = get_model("opencode-go", "glm-5")
+    assert m.provider == "opencode-go"
+    assert m.supports_tools is True

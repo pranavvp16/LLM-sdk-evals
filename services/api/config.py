@@ -7,6 +7,7 @@ See `.env.example` for the full list of supported variables.
 from __future__ import annotations
 
 from functools import lru_cache
+from typing import ClassVar
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -100,7 +101,7 @@ class Settings(BaseSettings):
                 urls["opencode-go"] = self.opencode_go_base_url.rstrip("/")
         return urls
 
-    _OSS_PROVIDERS: frozenset[str] = frozenset(
+    _OSS_PROVIDERS: ClassVar[frozenset[str]] = frozenset(
         {"vllm", "opencode", "opencode-go", "huggingface"}
     )
 

@@ -19,6 +19,7 @@ from sdk import Context, LLMWrapper, UserMessage, get_model
 from eval.judge import score
 from eval.prompts import ALL_PROMPTS, Prompt
 from services.api.config import get_settings
+from services.api.oss_registry import register_oss_models
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -116,6 +117,7 @@ async def _evaluate_one(
 
 
 async def main() -> None:
+    register_oss_models()
     settings = get_settings()
     oss_provider, oss_model = settings.resolve_oss()
     wrapper = LLMWrapper(

@@ -21,8 +21,16 @@ const MODEL_OPTIONS: ModelOption[] = [
   { provider: "anthropic", model: "claude-opus-4-7", label: "Opus 4.7" },
 ];
 
-const DEFAULT_LEFT = MODEL_OPTIONS[0];
-const DEFAULT_RIGHT = MODEL_OPTIONS[4];
+function findModel(provider: string, model: string): ModelOption {
+  const hit = MODEL_OPTIONS.find((o) => o.provider === provider && o.model === model);
+  if (!hit) {
+    throw new Error(`MODEL_OPTIONS missing ${provider}/${model}`);
+  }
+  return hit;
+}
+
+const DEFAULT_LEFT = findModel("vllm", "qwen2.5-0.5b-instruct");
+const DEFAULT_RIGHT = findModel("anthropic", "claude-sonnet-4-6");
 
 interface ColumnState {
   pick: ModelOption;
