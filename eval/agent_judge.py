@@ -23,6 +23,8 @@ from typing import Any, TypedDict
 
 from sdk import Context, LLMWrapper, UserMessage, get_model
 
+from eval.judge import _extract_assistant_text
+
 logger = logging.getLogger(__name__)
 
 
@@ -216,13 +218,14 @@ async def score_agent(
             logger.warning("agent judge call failed (attempt %d): %s", attempt, e)
             continue
 
-        parsed = _parse(assistant.content)
+        raw_text = _extract_assistant_text(assistant)
+        parsed = _parse(raw_text)
         if parsed is not None:
             return parsed
         logger.warning(
             "agent judge returned non-JSON on attempt %d: %r",
             attempt,
-            assistant.content[:200],
+            raw_text[:200],
         )
 
     return {
