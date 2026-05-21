@@ -51,6 +51,8 @@ PROVIDER_COMPAT: dict[str, dict] = {
     "deepseek":     {"reasoning_field": "reasoning_content"},
     "huggingface":  {"max_tokens_field": "max_tokens", "supports_usage_in_streaming": False},
     "together":     {"reasoning_field": "reasoning"},
+    "opencode":     {"max_tokens_field": "max_tokens", "supports_usage_in_streaming": False},
+    "opencode-go":  {"max_tokens_field": "max_tokens", "supports_usage_in_streaming": False},
 }
 
 PROVIDER_BASE_URLS: dict[str, str] = {
@@ -60,6 +62,8 @@ PROVIDER_BASE_URLS: dict[str, str] = {
     "together":     "https://api.together.xyz/v1",
     "ollama":       "http://localhost:11434/v1",
     "huggingface":  "https://api-inference.huggingface.co/v1",
+    "opencode":     "https://opencode.ai/zen/v1",
+    "opencode-go":  "https://opencode.ai/zen/go/v1",
 }
 
 

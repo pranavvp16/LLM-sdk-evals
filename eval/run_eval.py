@@ -24,9 +24,6 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 logger = logging.getLogger(__name__)
 
 
-OSS_PROVIDER = "huggingface"
-OSS_MODEL = "qwen2.5-0.5b-instruct"
-
 FRONTIER_PROVIDER = "anthropic"
 FRONTIER_MODEL = "claude-sonnet-4-6"
 
@@ -81,8 +78,10 @@ async def _call(
 async def _evaluate_one(
     wrapper: LLMWrapper,
     prompt: Prompt,
+    oss_provider: str,
+    oss_model: str,
 ) -> dict[str, Any]:
-    oss_call = _call(wrapper, OSS_PROVIDER, OSS_MODEL, prompt["prompt"], max_tokens=512)
+    oss_call = _call(wrapper, oss_provider, oss_model, prompt["prompt"], max_tokens=512)
     frontier_call = _call(wrapper, FRONTIER_PROVIDER, FRONTIER_MODEL, prompt["prompt"], max_tokens=1024)
     oss_out, frontier_out = await asyncio.gather(oss_call, frontier_call)
 
@@ -118,16 +117,22 @@ async def _evaluate_one(
 
 async def main() -> None:
     settings = get_settings()
-    wrapper = LLMWrapper(api_keys=settings.api_keys(), ingestion_url=settings.ingestion_url)
+    oss_provider, oss_model = settings.resolve_oss()
+    wrapper = LLMWrapper(
+        api_keys=settings.api_keys(),
+        base_urls=settings.base_urls(),
+        ingestion_url=settings.ingestion_url,
+    )
 
     results = []
     for prompt in ALL_PROMPTS:
-        results.append(await _evaluate_one(wrapper, prompt))
+        results.append(await _evaluate_one(wrapper, prompt, oss_provider, oss_model))
 
     payload = {
         "metadata": {
             "run_at": datetime.now(timezone.utc).isoformat(),
-            "oss_model": OSS_MODEL,
+            "oss_provider": oss_provider,
+            "oss_model": oss_model,
             "frontier_model": FRONTIER_MODEL,
             "judge_model": "claude-sonnet-4-6",
             "total_prompts": len(ALL_PROMPTS),

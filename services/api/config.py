@@ -58,9 +58,21 @@ class Settings(BaseSettings):
     groq_api_key: str = ""
     deepseek_api_key: str = ""
 
+    # ── OSS backends (vLLM, OpenCode Go, HF fallback) ─────────────────────
+    vllm_base_url: str = ""
+    vllm_api_key: str = "EMPTY"
+    vllm_model: str = "qwen2.5-0.5b-instruct"
+    opencode_api_key: str = ""
+    opencode_zen_base_url: str = "https://opencode.ai/zen/v1"
+    opencode_zen_model: str = "kimi-k2.5"
+    opencode_go_base_url: str = "https://opencode.ai/zen/go/v1"
+    opencode_go_model: str = "glm-5"
+    oss_provider: str = ""
+    oss_model: str = ""
+
     def api_keys(self) -> dict[str, str]:
         """Provider → key mapping for `LLMWrapper(api_keys=...)`."""
-        keys = {
+        keys: dict[str, str] = {
             "anthropic": self.anthropic_api_key,
             "openai": self.openai_api_key,
             "google": self.google_api_key,
@@ -68,7 +80,40 @@ class Settings(BaseSettings):
             "groq": self.groq_api_key,
             "deepseek": self.deepseek_api_key,
         }
+        if self.vllm_base_url:
+            keys["vllm"] = self.vllm_api_key or "EMPTY"
+        if self.opencode_api_key:
+            # pi-ai: one OPENCODE_API_KEY for both Zen and Go provider ids
+            keys["opencode"] = self.opencode_api_key
+            keys["opencode-go"] = self.opencode_api_key
         return {k: v for k, v in keys.items() if v}
+
+    def base_urls(self) -> dict[str, str]:
+        """Provider → base URL overrides for `LLMWrapper(base_urls=...)`."""
+        urls: dict[str, str] = {}
+        if self.vllm_base_url:
+            urls["vllm"] = self.vllm_base_url.rstrip("/")
+        if self.opencode_zen_base_url:
+            urls["opencode"] = self.opencode_zen_base_url.rstrip("/")
+        if self.opencode_go_base_url:
+            urls["opencode-go"] = self.opencode_go_base_url.rstrip("/")
+        return urls
+
+    def resolve_oss(self) -> tuple[str, str]:
+        """Return (provider, model_id) for CLI eval OSS side."""
+        defaults: dict[str, str] = {
+            "vllm": self.vllm_model,
+            "opencode": self.opencode_zen_model,
+            "opencode-go": self.opencode_go_model,
+            "huggingface": "qwen2.5-0.5b-instruct",
+        }
+        if self.oss_provider:
+            return self.oss_provider, self.oss_model or defaults.get(
+                self.oss_provider, self.vllm_model
+            )
+        if self.vllm_base_url:
+            return "vllm", self.vllm_model
+        return "huggingface", "qwen2.5-0.5b-instruct"
 
     def asyncpg_dsn(self) -> str:
         """asyncpg does not accept the SQLAlchemy '+asyncpg' suffix."""

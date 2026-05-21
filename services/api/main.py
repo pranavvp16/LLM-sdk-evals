@@ -52,6 +52,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     app.state.llm_wrapper = LLMWrapper(
         api_keys=settings.api_keys(),
+        base_urls=settings.base_urls(),
         ingestion_url=settings.ingestion_url,
     )
     logger.info("llm wrapper ready (providers: %s)", list(settings.api_keys().keys()))

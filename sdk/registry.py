@@ -186,6 +186,39 @@ _register(
         cost=ModelCost(),  # free tier
         supports_tools=False,
     ),
+    # vLLM — self-hosted OpenAI-compatible (base URL from env VLLM_BASE_URL)
+    ModelDef(
+        id="qwen2.5-0.5b-instruct",
+        provider="vllm",
+        api=ApiProtocol.OPENAI_COMPLETIONS,
+        context_window=32_768,
+        max_tokens=2_048,
+        cost=ModelCost(),
+        supports_tools=False,
+    ),
+    # OpenCode Zen (pay-as-you-go) — https://opencode.ai/zen/v1 (OPENCODE_API_KEY)
+    ModelDef(
+        id="kimi-k2.5",
+        provider="opencode",
+        api=ApiProtocol.OPENAI_COMPLETIONS,
+        context_window=262_144,
+        max_tokens=65_536,
+        cost=ModelCost(input=0.6, output=3.0, cache_read=0.1),
+        supports_vision=True,
+        supports_tools=True,
+        supports_reasoning=True,
+    ),
+    # OpenCode Go (subscription) — https://opencode.ai/zen/go/v1 (same OPENCODE_API_KEY)
+    ModelDef(
+        id="glm-5",
+        provider="opencode-go",
+        api=ApiProtocol.OPENAI_COMPLETIONS,
+        context_window=202_752,
+        max_tokens=32_768,
+        cost=ModelCost(input=1.0, output=3.2, cache_read=0.2),
+        supports_tools=True,
+        supports_reasoning=True,
+    ),
 )
 
 

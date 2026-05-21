@@ -27,6 +27,29 @@ def test_get_model_openai():
     assert m.supports_vision is True
 
 
+def test_get_model_vllm():
+    from sdk.registry import get_model
+    m = get_model("vllm", "qwen2.5-0.5b-instruct")
+    assert m.provider == "vllm"
+    assert m.api.value == "openai-completions"
+    assert m.supports_tools is False
+
+
+def test_get_model_opencode_zen():
+    from sdk.registry import get_model
+    m = get_model("opencode", "kimi-k2.5")
+    assert m.provider == "opencode"
+    assert m.api.value == "openai-completions"
+
+
+def test_get_model_opencode_go():
+    from sdk.registry import get_model
+    m = get_model("opencode-go", "glm-5")
+    assert m.provider == "opencode-go"
+    assert m.api.value == "openai-completions"
+    assert m.supports_tools is True
+
+
 def test_get_model_not_found():
     from sdk.registry import get_model
     with pytest.raises(ValueError, match="Unknown model"):
