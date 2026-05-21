@@ -25,6 +25,7 @@ from redis.asyncio import Redis
 from sdk import LLMWrapper
 
 from services.api.config import get_settings
+from services.api.oss_registry import register_oss_models
 from services.api.routers import chat, health, ingest, metrics
 from services.api.tools.builtins import register_builtins
 from services.api.tools.registry import ToolRegistry
@@ -35,6 +36,7 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
+    register_oss_models()
 
     app.state.pg_pool = await asyncpg.create_pool(
         dsn=settings.asyncpg_dsn(),
@@ -52,6 +54,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     app.state.llm_wrapper = LLMWrapper(
         api_keys=settings.api_keys(),
+        base_urls=settings.base_urls(),
         ingestion_url=settings.ingestion_url,
     )
     logger.info("llm wrapper ready (providers: %s)", list(settings.api_keys().keys()))

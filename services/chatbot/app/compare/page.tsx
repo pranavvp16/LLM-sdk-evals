@@ -12,10 +12,25 @@ interface ModelOption {
 }
 
 const MODEL_OPTIONS: ModelOption[] = [
+  { provider: "vllm", model: "qwen2.5-0.5b-instruct", label: "Qwen 0.5B (vLLM)" },
+  { provider: "opencode", model: "kimi-k2.5", label: "Kimi K2.5 (OpenCode Zen)" },
+  { provider: "opencode-go", model: "glm-5", label: "GLM-5 (OpenCode Go)" },
+  { provider: "huggingface", model: "qwen2.5-0.5b-instruct", label: "Qwen 0.5B (HF)" },
   { provider: "anthropic", model: "claude-sonnet-4-6", label: "Sonnet 4.6 (frontier)" },
   { provider: "anthropic", model: "claude-haiku-4-5-20251001", label: "Haiku 4.5" },
   { provider: "anthropic", model: "claude-opus-4-7", label: "Opus 4.7" },
 ];
+
+function findModel(provider: string, model: string): ModelOption {
+  const hit = MODEL_OPTIONS.find((o) => o.provider === provider && o.model === model);
+  if (!hit) {
+    throw new Error(`MODEL_OPTIONS missing ${provider}/${model}`);
+  }
+  return hit;
+}
+
+const DEFAULT_LEFT = findModel("vllm", "qwen2.5-0.5b-instruct");
+const DEFAULT_RIGHT = findModel("anthropic", "claude-sonnet-4-6");
 
 interface ColumnState {
   pick: ModelOption;
@@ -37,8 +52,8 @@ const initial = (pick: ModelOption): ColumnState => ({
 
 export default function ComparePage() {
   const [prompt, setPrompt] = useState("");
-  const [left, setLeft] = useState<ColumnState>(initial(MODEL_OPTIONS[0]));
-  const [right, setRight] = useState<ColumnState>(initial(MODEL_OPTIONS[1]));
+  const [left, setLeft] = useState<ColumnState>(initial(DEFAULT_LEFT));
+  const [right, setRight] = useState<ColumnState>(initial(DEFAULT_RIGHT));
   const abortRef = useRef<AbortController | null>(null);
 
   function setSide(side: "left" | "right", patch: Partial<ColumnState>) {
@@ -99,8 +114,8 @@ export default function ComparePage() {
           </Link>
           <h1 className="mt-1 text-2xl font-semibold">Side-by-side compare</h1>
           <p className="text-xs text-neutral-500">
-            Send the same prompt to two models in parallel. Once vLLM/Qwen is hosted, swap the left
-            column to OSS to reproduce the eval head-to-head.
+            Send the same prompt to two models in parallel. Pick OSS (vLLM, OpenCode Go, or HF) on
+            the left and Claude on the right to mirror the eval comparison.
           </p>
         </div>
       </header>

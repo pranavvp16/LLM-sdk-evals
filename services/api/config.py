@@ -7,6 +7,7 @@ See `.env.example` for the full list of supported variables.
 from __future__ import annotations
 
 from functools import lru_cache
+from typing import ClassVar
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -58,9 +59,21 @@ class Settings(BaseSettings):
     groq_api_key: str = ""
     deepseek_api_key: str = ""
 
+    # ── OSS backends (vLLM, OpenCode Go, HF fallback) ─────────────────────
+    vllm_base_url: str = ""
+    vllm_api_key: str = "EMPTY"
+    vllm_model: str = "qwen2.5-0.5b-instruct"
+    opencode_api_key: str = ""
+    opencode_zen_base_url: str = "https://opencode.ai/zen/v1"
+    opencode_zen_model: str = "kimi-k2.5"
+    opencode_go_base_url: str = "https://opencode.ai/zen/go/v1"
+    opencode_go_model: str = "glm-5"
+    oss_provider: str = ""
+    oss_model: str = ""
+
     def api_keys(self) -> dict[str, str]:
         """Provider → key mapping for `LLMWrapper(api_keys=...)`."""
-        keys = {
+        keys: dict[str, str] = {
             "anthropic": self.anthropic_api_key,
             "openai": self.openai_api_key,
             "google": self.google_api_key,
@@ -68,7 +81,70 @@ class Settings(BaseSettings):
             "groq": self.groq_api_key,
             "deepseek": self.deepseek_api_key,
         }
+        if self.vllm_base_url:
+            keys["vllm"] = self.vllm_api_key or "EMPTY"
+        if self.opencode_api_key:
+            # pi-ai: one OPENCODE_API_KEY for both Zen and Go provider ids
+            keys["opencode"] = self.opencode_api_key
+            keys["opencode-go"] = self.opencode_api_key
         return {k: v for k, v in keys.items() if v}
+
+    def base_urls(self) -> dict[str, str]:
+        """Provider → base URL overrides for `LLMWrapper(base_urls=...)`."""
+        urls: dict[str, str] = {}
+        if self.vllm_base_url:
+            urls["vllm"] = self.vllm_base_url.rstrip("/")
+        if self.opencode_api_key:
+            if self.opencode_zen_base_url:
+                urls["opencode"] = self.opencode_zen_base_url.rstrip("/")
+            if self.opencode_go_base_url:
+                urls["opencode-go"] = self.opencode_go_base_url.rstrip("/")
+        return urls
+
+    _OSS_PROVIDERS: ClassVar[frozenset[str]] = frozenset(
+        {"vllm", "opencode", "opencode-go", "huggingface"}
+    )
+
+    def _require_oss_config(self, provider: str) -> None:
+        """Fail fast when OSS_PROVIDER names a backend that is not wired up."""
+        if provider == "vllm" and not self.vllm_base_url:
+            raise ValueError(
+                "OSS_PROVIDER=vllm requires VLLM_BASE_URL (vLLM is not in default compose)"
+            )
+        if provider in ("opencode", "opencode-go") and not self.opencode_api_key:
+            raise ValueError(
+                f"OSS_PROVIDER={provider} requires OPENCODE_API_KEY"
+            )
+        if provider == "huggingface" and not self.huggingface_api_key:
+            raise ValueError(
+                "OSS eval via huggingface requires HUGGINGFACE_API_KEY"
+            )
+
+    def resolve_oss(self) -> tuple[str, str]:
+        """Return (provider, model_id) for CLI eval OSS side.
+
+        Defaults to HuggingFace so `python eval/run_eval.py` works out of the box
+        with only HUGGINGFACE_API_KEY. Set OSS_PROVIDER to pick vLLM or OpenCode.
+        Unknown providers or missing backend config raise before the run starts.
+        """
+        defaults: dict[str, str] = {
+            "vllm": self.vllm_model,
+            "opencode": self.opencode_zen_model,
+            "opencode-go": self.opencode_go_model,
+            "huggingface": "qwen2.5-0.5b-instruct",
+        }
+        if self.oss_provider:
+            provider = self.oss_provider.strip()
+            if provider not in self._OSS_PROVIDERS:
+                allowed = ", ".join(sorted(self._OSS_PROVIDERS))
+                raise ValueError(
+                    f"Invalid OSS_PROVIDER={provider!r}; must be one of: {allowed}"
+                )
+            self._require_oss_config(provider)
+            return provider, self.oss_model or defaults[provider]
+        provider = "huggingface"
+        self._require_oss_config(provider)
+        return provider, defaults[provider]
 
     def asyncpg_dsn(self) -> str:
         """asyncpg does not accept the SQLAlchemy '+asyncpg' suffix."""

@@ -70,6 +70,10 @@ additional providers and the eval comparison.
 | `HUGGINGFACE_API_KEY`  | no       | OSS model for eval + HF Inference API fallback   |
 | `VLLM_BASE_URL`        | no       | Self-hosted Qwen2.5-0.5B (OpenAI-compatible)     |
 | `VLLM_API_KEY`         | no       | Bearer token for vLLM (`EMPTY` works by default) |
+| `OPENCODE_API_KEY`     | no       | OpenCode Zen (`opencode`) and Go (`opencode-go`); same key as pi |
+| `OPENCODE_ZEN_BASE_URL`| no       | Zen API default `https://opencode.ai/zen/v1`     |
+| `OPENCODE_GO_BASE_URL` | no       | Go API default `https://opencode.ai/zen/go/v1`   |
+| `OSS_PROVIDER`         | no       | CLI eval: `vllm`, `opencode`, `opencode-go`, or `huggingface` |
 | `POSTGRES_*`           | preset   | Defaults work out of the box                     |
 | `CLICKHOUSE_*`         | preset   | Defaults work out of the box                     |
 | `REDIS_URL`            | preset   | Defaults work out of the box                     |
@@ -88,7 +92,9 @@ know what you're doing.
 4. Try `Schedule a 30-minute call with Priya at 10am tomorrow` — the model
    will call the `schedule_call` tool and the UI will render a tool card
    inline with the returned `event_id`.
-5. Open http://localhost:3001 (Grafana, `admin/admin`) → the latency,
+5. Open http://localhost:3000/compare — pick any two models (vLLM Qwen, OpenCode
+   Go GLM-5, HF Qwen, or Claude) and run the same prompt side-by-side.
+6. Open http://localhost:3001 (Grafana, `admin/admin`) → the latency,
    throughput, and error dashboards populate within a couple of seconds.
 
 ---
@@ -120,8 +126,8 @@ python eval/report.py       # → docs/eval_report.pdf
 ```
 
 Set `VLLM_BASE_URL` + `VLLM_API_KEY` when self-hosting Qwen via vLLM for chat
-or the `/compare` UI — the eval runner currently calls the OSS model through
-HuggingFace only (`eval/run_eval.py`).
+or `/compare`. CLI eval defaults to HuggingFace; set `OSS_PROVIDER=vllm` (or
+`opencode` / `opencode-go`) to switch the OSS side in `eval/run_eval.py`.
 
 ---
 

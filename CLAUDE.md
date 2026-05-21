@@ -16,10 +16,11 @@ A multi-turn chatbot with short-term memory and a small set of mock daily-life
 tools (schedule call, update calendar, set reminder, etc.). The same UI talks
 to two models:
 
-- **OSS:** `qwen2.5-0.5b-instruct` — hosted separately on **vLLM** and exposed
-  via an OpenAI-compatible HTTP endpoint. The SDK already supports this — we
-  just pass `base_urls={"openai": "http://<vllm-host>/v1"}` and a registry
-  entry that points at it.
+- **OSS:** `qwen2.5-0.5b-instruct` (or other registry models) via one of several
+  OpenAI-compatible backends — **vLLM** (`vllm`), **OpenCode Zen** (`opencode`),
+  **OpenCode Go** (`opencode-go`), or **HuggingFace Inference** (`huggingface`).
+  The chat UI and `/compare` pick provider per request; CLI eval defaults to
+  HuggingFace unless `OSS_PROVIDER` is set (see §5).
 - **Frontier:** `claude-sonnet-4-6` via Anthropic API.
 
 The assistants are evaluated on hallucination, bias, and safety using
@@ -205,39 +206,61 @@ ollive-assignment/
 
 ---
 
-## 5. Provider configuration (incl. vLLM-hosted OSS)
+## 5. Provider configuration (OSS backends)
 
-The OSS model is hosted externally (vLLM container, Modal endpoint, etc.) and
-exposed as **OpenAI-compatible**. We do not run inference inside this repo.
-The SDK already supports this pattern:
+OSS inference is **not** run inside this repo. Each backend is a separate
+registry provider id with an OpenAI-compatible wire format. Catalog entries for
+`vllm` / `opencode` / `opencode-go` are registered at runtime via
+`services/api/oss_registry.py` (keeps frozen `sdk/registry.py` unchanged).
+`services/api/config.py` builds `api_keys` and `base_urls` for `LLMWrapper`:
+
+| Provider id   | Use case              | Key env                         | URL env (optional override)      |
+|---------------|-----------------------|---------------------------------|----------------------------------|
+| `vllm`        | Self-hosted Qwen      | `VLLM_API_KEY` (when URL set)   | `VLLM_BASE_URL`                  |
+| `opencode`    | OpenCode Zen (pi-ai)  | `OPENCODE_API_KEY`              | `OPENCODE_ZEN_BASE_URL`          |
+| `opencode-go` | OpenCode Go plan      | same `OPENCODE_API_KEY`         | `OPENCODE_GO_BASE_URL`           |
+| `huggingface` | HF Inference API      | `HUGGINGFACE_API_KEY`           | (built into registry)            |
+
+`base_urls()` only adds vLLM when `VLLM_BASE_URL` is set, and OpenCode URLs only
+when `OPENCODE_API_KEY` is set (defaults for Zen/Go URLs exist in settings but
+are not injected without a key).
 
 ```python
 wrapper = LLMWrapper(
-    api_keys={
-        "anthropic": settings.anthropic_api_key,
-        "openai": settings.openai_api_key,
-        "vllm": settings.vllm_api_key or "EMPTY",
-    },
-    base_urls={
-        "vllm": settings.vllm_base_url,       # e.g. https://qwen.<host>/v1
-    },
-    ingestion_url="http://api:8000/ingest/log",
+    api_keys=settings.api_keys(),
+    base_urls=settings.base_urls(),
+    ingestion_url=settings.ingestion_url,
 )
 
-model = get_model("vllm", "qwen2.5-0.5b-instruct")  # registry entry, openai-compatible
+# Chat / compare: UI sends provider + model per request
+model = get_model("vllm", "qwen2.5-0.5b-instruct")
+model = get_model("opencode", "kimi-k2.5")
+model = get_model("opencode-go", "glm-5")
+model = get_model("huggingface", "qwen2.5-0.5b-instruct")
 ```
 
-**Env vars (add to `.env.example`):**
+**Env vars (see `.env.example`):**
 
 ```
-VLLM_BASE_URL=http://localhost:8001/v1
-VLLM_API_KEY=EMPTY                # vLLM accepts any non-empty bearer token by default
+VLLM_BASE_URL=                    # empty by default — no vLLM in compose
+VLLM_API_KEY=EMPTY
 VLLM_MODEL=qwen2.5-0.5b-instruct
+OPENCODE_API_KEY=
+OPENCODE_ZEN_BASE_URL=https://opencode.ai/zen/v1
+OPENCODE_ZEN_MODEL=kimi-k2.5
+OPENCODE_GO_BASE_URL=https://opencode.ai/zen/go/v1
+OPENCODE_GO_MODEL=glm-5
+OSS_PROVIDER=                     # CLI eval only: vllm | opencode | opencode-go | huggingface
+OSS_MODEL=
 ```
 
-For local dev without a vLLM server, fall back to a HuggingFace Inference API
-key (same registry entry kind — `openai-compatible`). For tests, never call
-either — use the fake provider in `tests/conftest.py`.
+**CLI eval (`eval/run_eval.py`):** `settings.resolve_oss()` defaults to
+`huggingface` / `qwen2.5-0.5b-instruct` so eval works with only
+`HUGGINGFACE_API_KEY`. Set `OSS_PROVIDER` explicitly to use vLLM or OpenCode.
+Unknown provider ids or missing backend config (e.g. `OSS_PROVIDER=vllm` without
+`VLLM_BASE_URL`) raise before the eval loop starts.
+
+For tests, never call real providers — use the fake provider in `tests/conftest.py`.
 
 ---
 
@@ -555,7 +578,7 @@ from memory — read that file.
 
 ```bash
 cp .env.example .env
-# fill: ANTHROPIC_API_KEY, optional OPENAI_API_KEY, VLLM_BASE_URL (or HF fallback)
+# fill: ANTHROPIC_API_KEY, HUGGINGFACE_API_KEY (eval OSS default), optional VLLM_BASE_URL
 
 docker compose up
 
