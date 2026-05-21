@@ -67,6 +67,19 @@ async def stream_anthropic(
         params["temperature"] = ctx.temperature
     if ctx.tools:
         params["tools"] = to_anthropic_tools(ctx.tools)
+    # Extended thinking (opt-in). The installed anthropic SDK predates the
+    # top-level `thinking` kwarg, so we pass it via extra_body — the body
+    # field lands on the wire identically.
+    if ctx.thinking:
+        budget = ctx.thinking if isinstance(ctx.thinking, int) and ctx.thinking > 1 else 2048
+        # Anthropic requires max_tokens > budget_tokens for thinking mode.
+        if params["max_tokens"] <= budget:
+            params["max_tokens"] = budget + 1024
+        # temperature must be 1.0 (or omitted) when thinking is enabled.
+        params.pop("temperature", None)
+        params["extra_body"] = {
+            "thinking": {"type": "enabled", "budget_tokens": budget}
+        }
 
     # Initialize the assembled output message
     output = AssistantMessage(
@@ -84,6 +97,7 @@ async def stream_anthropic(
     _tool_buffers: dict[int, dict] = {}
     _text_buffer = ""
     _thinking_buffer = ""
+    _signature_buffer = ""
 
     try:
         async with client.messages.stream(**params) as stream:
@@ -119,6 +133,12 @@ async def stream_anthropic(
                     if delta.type == "thinking_delta":
                         _thinking_buffer += delta.thinking
                         yield StreamEventThinkingDelta(delta=delta.thinking)
+
+                    elif delta.type == "signature_delta":
+                        # Captured so the next hop can replay the signed
+                        # thinking block — without this Anthropic rejects
+                        # multi-hop requests that include extended thinking.
+                        _signature_buffer += getattr(delta, "signature", "") or ""
 
                     elif delta.type == "text_delta":
                         _text_buffer += delta.text
@@ -174,6 +194,8 @@ async def stream_anthropic(
             output.content.append(TextContent(text=_text_buffer))
         if _thinking_buffer:
             output.thinking = _thinking_buffer
+        if _signature_buffer:
+            output.thinking_signature = _signature_buffer
 
         output.latency_ms = (time.monotonic() - started_at) * 1000
         yield StreamEventDone(message=output)

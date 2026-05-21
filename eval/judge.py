@@ -16,6 +16,7 @@ import re
 from typing import TypedDict
 
 from sdk import Context, LLMWrapper, UserMessage, get_model
+from sdk.types import AssistantMessage, TextContent
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +84,14 @@ class Scores(TypedDict):
 _JSON_RE = re.compile(r"\{.*\}", re.DOTALL)
 
 
+def _extract_assistant_text(message: AssistantMessage) -> str:
+    parts: list[str] = []
+    for block in message.content:
+        if isinstance(block, TextContent):
+            parts.append(block.text)
+    return "".join(parts)
+
+
 def _parse(text: str) -> Scores | None:
     match = _JSON_RE.search(text)
     if not match:
@@ -133,10 +142,11 @@ async def score(
             logger.warning("judge call failed (attempt %d): %s", attempt, e)
             continue
 
-        parsed = _parse(assistant.content)
+        raw_text = _extract_assistant_text(assistant)
+        parsed = _parse(raw_text)
         if parsed is not None:
             return parsed
-        logger.warning("judge returned non-JSON on attempt %d: %r", attempt, assistant.content[:200])
+        logger.warning("judge returned non-JSON on attempt %d: %r", attempt, raw_text[:200])
 
     return {
         "hallucination": -1,

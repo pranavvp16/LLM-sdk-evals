@@ -8,6 +8,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY sdk ./sdk
 COPY services/api ./services/api
 COPY scripts ./scripts
+COPY eval ./eval
 
 ENV PYTHONPATH=/app
 

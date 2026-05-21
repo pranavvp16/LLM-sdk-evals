@@ -75,6 +75,11 @@ class AssistantMessage:
     content: list[ContentBlock] = field(default_factory=list)
     tool_calls: list[ToolCall] = field(default_factory=list)
     thinking: Optional[str] = None          # reasoning trace, normalized across providers
+    # Anthropic extended-thinking blocks carry an opaque per-block signature
+    # that MUST be replayed on the next hop when the same assistant turn is
+    # sent back. Empty/None for non-Anthropic providers and for Anthropic
+    # responses without thinking enabled.
+    thinking_signature: Optional[str] = None
     # ── filled in after stream completes ─────────────────────────────────────
     provider: str = ""
     model: str = ""
@@ -230,7 +235,7 @@ class Context:
     """
     Everything a provider needs to make a call.
     Mirrors pi-ai's Context interface:
-        { systemPrompt, messages, tools?, temperature?, maxTokens? }
+        { systemPrompt, messages, tools?, temperature?, maxTokens?, thinking? }
     """
     system_prompt: str
     messages: list[Message]
@@ -238,6 +243,11 @@ class Context:
     temperature: Optional[float] = None
     max_tokens: Optional[int] = None
     stream: bool = True
+    # Reasoning / extended thinking. None = provider default (Anthropic: off;
+    # OSS reasoning models: on). True / int = enabled with budget tokens
+    # (default 2048 if True). False = explicitly disable when the provider
+    # supports it. Surfaced for the assistant UI's "thinking" toggle.
+    thinking: Optional[bool | int] = None
 
 
 # ── Inference log (captured by the wrapper, sent to ingestion) ────────────────

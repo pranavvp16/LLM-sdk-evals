@@ -26,7 +26,7 @@ from sdk import LLMWrapper
 
 from services.api.config import get_settings
 from services.api.oss_registry import register_oss_models
-from services.api.routers import chat, health, ingest, metrics
+from services.api.routers import chat, eval as eval_router, health, ingest, metrics
 from services.api.tools.builtins import register_builtins
 from services.api.tools.registry import ToolRegistry
 
@@ -111,6 +111,7 @@ def create_app() -> FastAPI:
     app.include_router(chat.router)
     app.include_router(ingest.router)
     app.include_router(metrics.router)
+    app.include_router(eval_router.router)
 
     Instrumentator().instrument(app).expose(app, endpoint="/metrics", include_in_schema=False)
 

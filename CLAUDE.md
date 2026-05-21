@@ -16,16 +16,27 @@ A multi-turn chatbot with short-term memory and a small set of mock daily-life
 tools (schedule call, update calendar, set reminder, etc.). The same UI talks
 to two models:
 
-- **OSS:** `qwen2.5-0.5b-instruct` (or other registry models) via one of several
-  OpenAI-compatible backends — **vLLM** (`vllm`), **OpenCode Zen** (`opencode`),
-  **OpenCode Go** (`opencode-go`), or **HuggingFace Inference** (`huggingface`).
-  The chat UI and `/compare` pick provider per request; CLI eval defaults to
-  HuggingFace unless `OSS_PROVIDER` is set (see §5).
+- **OSS:** `deepseek-v4-flash` (OpenCode Go) by default — a reasoning model
+  with `supports_tools=True`. The previously-considered `glm-5` is also
+  registered on the same provider for comparison. Other OpenAI-compatible backends are still selectable
+  per request: **vLLM** (`vllm`), **OpenCode Zen** (`opencode`), or
+  **HuggingFace Inference** (`huggingface`, used as a fallback when no
+  OpenCode key is set). The chat UI and `/compare` pick provider per request;
+  CLI eval picks via `Settings.resolve_oss()` (see §5).
 - **Frontier:** `claude-sonnet-4-6` via Anthropic API.
 
-The assistants are evaluated on hallucination, bias, and safety using
-**LLM-as-judge** (Claude Sonnet scores both). The output is a 1-page PDF
-sent to `work@ollive.ai`.
+The assistants are evaluated on three layers (see §10):
+1. **Heuristic / instruction-following** — deterministic checks against a
+   shared structured system prompt (persona signature, required headers,
+   banned phrases, length bounds).
+2. **LLM-as-judge static** — hallucination, bias, safety on 30 plain-text
+   prompts.
+3. **LLM-as-judge agent** — 5-axis trajectory scoring on 20 tool-use
+   prompts (tool selection, argument correctness, task completion, output
+   grounding, safety with tools).
+
+Results browse at `http://localhost:3000/compare?view=benchmark` with
+per-prompt drill-down, and as a generated PDF at `docs/eval_report.pdf`.
 
 **Part B — Inference logging pipeline**
 Every LLM call the chatbot makes flows through `LLMWrapper`, which captures an
@@ -249,16 +260,18 @@ OPENCODE_API_KEY=
 OPENCODE_ZEN_BASE_URL=https://opencode.ai/zen/v1
 OPENCODE_ZEN_MODEL=kimi-k2.5
 OPENCODE_GO_BASE_URL=https://opencode.ai/zen/go/v1
-OPENCODE_GO_MODEL=glm-5
+OPENCODE_GO_MODEL=deepseek-v4-flash
 OSS_PROVIDER=                     # CLI eval only: vllm | opencode | opencode-go | huggingface
 OSS_MODEL=
 ```
 
-**CLI eval (`eval/run_eval.py`):** `settings.resolve_oss()` defaults to
-`huggingface` / `qwen2.5-0.5b-instruct` so eval works with only
-`HUGGINGFACE_API_KEY`. Set `OSS_PROVIDER` explicitly to use vLLM or OpenCode.
-Unknown provider ids or missing backend config (e.g. `OSS_PROVIDER=vllm` without
-`VLLM_BASE_URL`) raise before the eval loop starts.
+**CLI eval (`eval/run_eval.py`):** `settings.resolve_oss()` cascade is
+`OSS_PROVIDER` (explicit) → `opencode-go` if `OPENCODE_API_KEY` is set
+(preferred — required for the agent / tool-use eval since
+`supports_tools=True`) → `huggingface` if only `HUGGINGFACE_API_KEY` is set
+(static-eval only, no tool support) → `ValueError`. Unknown provider ids or
+missing backend config (e.g. `OSS_PROVIDER=vllm` without `VLLM_BASE_URL`)
+raise before the eval loop starts.
 
 For tests, never call real providers — use the fake provider in `tests/conftest.py`.
 
@@ -537,26 +550,54 @@ Work tasks in order. Don't start the next task until the current one's tests pas
 
 ## 10. Eval methodology (Task 7)
 
-Compare **Qwen2.5-0.5B (vLLM)** vs **Claude Sonnet 4** on three axes:
-hallucination, bias, safety. 30 prompts (10 factual / 10 adversarial / 10 bias).
-Judge is Claude Sonnet via `LLMWrapper`, scoring 0–5 on each axis with a strict
-JSON output rubric. Retry up to 3× on bad JSON; record `judge_failed` if it
-still won't parse.
+Compare **GLM-5 (OpenCode Go)** vs **Claude Sonnet 4.6** across three eval
+layers — each measures a different thing, none of them double-count.
 
-Run output: `eval/results.json` with 60 entries (30 × 2 models), each carrying
-response text, latency, tokens, cost, status, and the three judge scores.
+### 10.1 Three layers
 
-Report output: `docs/eval_report.pdf` — three pages:
+| Layer | What it measures | Scorer | Files |
+|---|---|---|---|
+| **L1 Heuristic** | Did the response obey the shared structured system prompt? Persona signature, required H1/H2/H3 headers, banned phrases, length bounds. | Deterministic Python checks. | `eval/heuristics.py` |
+| **L2 LLM-judge static** | Hallucination / bias / safety on plain-text Q&A across 30 prompts (10 factual / 10 adversarial / 10 bias). | Claude Sonnet 4.6 (0–5 per axis). | `eval/prompts.py`, `eval/judge.py` |
+| **L3 LLM-judge agent** | 5-axis trajectory scoring across 20 tool-use prompts (single-tool / multi-tool / no-tool / ambiguous / adversarial-tool). Axes: tool_selection, argument_correctness, task_completion, output_grounding, safety_with_tools. | Claude Sonnet 4.6 (0–5 per axis). | `eval/agent_prompts.py`, `eval/agent_runner.py`, `eval/agent_judge.py` |
 
-1. **Summary** — 4 metric cards (hallucination / bias / safety / cost), radar
-   chart, "use OSS when… / use Frontier when…" verdict.
-2. **Breakdown** — three grouped bar charts (one per category) + latency/cost
-   table including p95 and jailbreak fail rate.
-3. **Notable failures** — worst 5 responses per model, truncated to 150 chars,
-   with prompt id and scores.
+Both models receive the **same** structured system prompt (`AGENT_SYSTEM_PROMPT`
+in `eval/heuristics.py`); the judges are told to ignore formatting so L1 and
+L2/L3 don't overlap.
 
-The full rubric and prompt template are in `eval/judge.py`. Don't rewrite them
-from memory — read that file.
+### 10.2 Outputs
+
+- `eval/results.json` — `{metadata, static_results, agent_results}`. Each
+  row carries both models' responses (or full trajectories), heuristic
+  pass/fail, judge scores, latency, tokens, cost.
+- `docs/eval_report.pdf` — 5 pages:
+  1. Summary cards + static radar + heuristic compliance + verdict
+  2. Static per-category bars + latency/cost/jailbreak table
+  3. Notable static failures (worst 5 per model)
+  4. Agent 5-axis cards + 5-axis radar + hop/error summary
+  5. Agent per-category bars + worst-3 trajectories per model
+
+### 10.3 UI surface
+
+`http://localhost:3000/compare?view=benchmark` opens a master-detail
+browser: list of all 50 prompts on the left, click any prompt to drill into
+both models' responses (or trajectories), heuristic checklist, judge
+rationale, latency and cost. A **Run eval** button kicks off the eval as a
+background task via `POST /eval/run` and polls `GET /eval/runs/latest`
+every 2 s.
+
+### 10.4 Running
+
+```bash
+python eval/run_eval.py             # both sections (default)
+python eval/run_eval.py --static    # just the 30
+python eval/run_eval.py --agent     # just the 20 tool-use trajectories
+python eval/run_eval.py --all --limit 3   # smoke run
+python eval/report.py               # regenerate the PDF from results.json
+```
+
+The full rubrics live in `eval/judge.py` and `eval/agent_judge.py`. Don't
+rewrite them from memory — read those files.
 
 ---
 

@@ -58,6 +58,9 @@ class ChatStreamRequest(BaseModel):
     system_prompt: Optional[str] = None
     temperature: Optional[float] = None
     max_tokens: Optional[int] = None
+    # True (or int budget) → enable reasoning; False → ask provider to disable
+    # if supported; None → provider default (Anthropic off, OSS reasoning on).
+    thinking: Optional[bool | int] = None
 
 
 class ConversationOut(BaseModel):
@@ -215,6 +218,7 @@ async def chat_stream(
         tools=tools.schemas(),
         temperature=body.temperature,
         max_tokens=body.max_tokens,
+        thinking=body.thinking,
     )
 
     async def event_generator() -> AsyncIterator[bytes]:
