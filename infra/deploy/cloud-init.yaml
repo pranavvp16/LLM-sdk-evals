@@ -80,6 +80,12 @@ write_files:
       cd /opt/ollive/repo
       # Strip token from remote so it doesn't persist on disk
       git remote set-url origin "$OLLIVE_REPO_URL"
+      # Install credential helper so future `git pull`s (e.g. from CI deploy step) work
+      if [ -n "$OLLIVE_GH_TOKEN" ]; then
+          echo "https://x-access-token:${OLLIVE_GH_TOKEN}@github.com" > /root/.git-credentials
+          chmod 600 /root/.git-credentials
+          git config --system credential.helper store
+      fi
       cp .env.example .env
 
       # -- Generate secrets + write deployment .env --------------------
