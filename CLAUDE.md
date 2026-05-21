@@ -254,8 +254,9 @@ OSS_MODEL=
 
 **CLI eval (`eval/run_eval.py`):** `settings.resolve_oss()` defaults to
 `huggingface` / `qwen2.5-0.5b-instruct` so eval works with only
-`HUGGINGFACE_API_KEY`. Set `OSS_PROVIDER` explicitly to use vLLM or OpenCode;
-invalid values raise before the run starts.
+`HUGGINGFACE_API_KEY`. Set `OSS_PROVIDER` explicitly to use vLLM or OpenCode.
+Unknown provider ids or missing backend config (e.g. `OSS_PROVIDER=vllm` without
+`VLLM_BASE_URL`) raise before the eval loop starts.
 
 For tests, never call real providers — use the fake provider in `tests/conftest.py`.
 

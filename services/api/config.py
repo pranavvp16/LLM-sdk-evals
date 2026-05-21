@@ -104,11 +104,27 @@ class Settings(BaseSettings):
         {"vllm", "opencode", "opencode-go", "huggingface"}
     )
 
+    def _require_oss_config(self, provider: str) -> None:
+        """Fail fast when OSS_PROVIDER names a backend that is not wired up."""
+        if provider == "vllm" and not self.vllm_base_url:
+            raise ValueError(
+                "OSS_PROVIDER=vllm requires VLLM_BASE_URL (vLLM is not in default compose)"
+            )
+        if provider in ("opencode", "opencode-go") and not self.opencode_api_key:
+            raise ValueError(
+                f"OSS_PROVIDER={provider} requires OPENCODE_API_KEY"
+            )
+        if provider == "huggingface" and not self.huggingface_api_key:
+            raise ValueError(
+                "OSS eval via huggingface requires HUGGINGFACE_API_KEY"
+            )
+
     def resolve_oss(self) -> tuple[str, str]:
         """Return (provider, model_id) for CLI eval OSS side.
 
         Defaults to HuggingFace so `python eval/run_eval.py` works out of the box
         with only HUGGINGFACE_API_KEY. Set OSS_PROVIDER to pick vLLM or OpenCode.
+        Unknown providers or missing backend config raise before the run starts.
         """
         defaults: dict[str, str] = {
             "vllm": self.vllm_model,
@@ -123,8 +139,11 @@ class Settings(BaseSettings):
                 raise ValueError(
                     f"Invalid OSS_PROVIDER={provider!r}; must be one of: {allowed}"
                 )
+            self._require_oss_config(provider)
             return provider, self.oss_model or defaults[provider]
-        return "huggingface", defaults["huggingface"]
+        provider = "huggingface"
+        self._require_oss_config(provider)
+        return provider, defaults[provider]
 
     def asyncpg_dsn(self) -> str:
         """asyncpg does not accept the SQLAlchemy '+asyncpg' suffix."""
