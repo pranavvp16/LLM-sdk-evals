@@ -8,6 +8,7 @@ transaction when they need to.
 from __future__ import annotations
 
 import hashlib
+import json
 from typing import Any, Optional
 from uuid import UUID
 
@@ -138,7 +139,6 @@ async def add_message(
     tool_calls: list[dict[str, Any]] | None = None,
     is_error: bool = False,
 ) -> dict[str, Any]:
-    import json as _json
     row = await pool.fetchrow(
         """
         INSERT INTO messages (
@@ -155,7 +155,7 @@ async def add_message(
         content,
         token_count,
         tool_call_id,
-        _json.dumps(tool_calls) if tool_calls is not None else None,
+        json.dumps(tool_calls) if tool_calls is not None else None,
         is_error,
     )
     # touch the parent conversation so list ordering reflects activity
@@ -167,7 +167,6 @@ async def add_message(
 
 
 async def list_messages(pool: asyncpg.Pool, conv_id: UUID) -> list[dict[str, Any]]:
-    import json as _json
     rows = await pool.fetch(
         """
         SELECT id, conversation_id, role, content,
@@ -175,7 +174,7 @@ async def list_messages(pool: asyncpg.Pool, conv_id: UUID) -> list[dict[str, Any
                token_count, created_at
         FROM messages
         WHERE conversation_id = $1
-        ORDER BY created_at ASC
+        ORDER BY created_at ASC, id ASC
         """,
         conv_id,
     )
@@ -184,6 +183,6 @@ async def list_messages(pool: asyncpg.Pool, conv_id: UUID) -> list[dict[str, Any
         d = dict(r)
         # asyncpg returns jsonb as a string — parse so callers get a list[dict].
         if isinstance(d.get("tool_calls"), str):
-            d["tool_calls"] = _json.loads(d["tool_calls"])
+            d["tool_calls"] = json.loads(d["tool_calls"])
         out.append(d)
     return out

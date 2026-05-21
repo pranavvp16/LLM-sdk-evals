@@ -92,7 +92,7 @@ def _sse(data: dict) -> bytes:
 
 def _rebuild_history(history: list[dict]) -> list:
     """Reconstruct UserMessage / AssistantMessage / ToolResultMessage objects
-    from message rows in `created_at` order.
+    from message rows in insertion order.
 
     Anthropic's wire format requires the tool_result blocks that satisfy a
     given assistant turn to live in one user-role message that follows it
@@ -101,6 +101,9 @@ def _rebuild_history(history: list[dict]) -> list:
     """
     out: list = []
     pending_results: list[ToolResult] = []
+    # Populated from the most recent assistant row's tool_calls JSONB so
+    # replayed ToolResult objects carry the same name as live execution.
+    tool_names: dict[str, str] = {}
 
     def flush_results() -> None:
         nonlocal pending_results
@@ -111,10 +114,11 @@ def _rebuild_history(history: list[dict]) -> list:
     for m in history:
         role = m["role"]
         if role == "tool_result":
+            tc_id = m.get("tool_call_id") or ""
             pending_results.append(
                 ToolResult(
-                    tool_call_id=m.get("tool_call_id") or "",
-                    name="",
+                    tool_call_id=tc_id,
+                    name=tool_names.get(tc_id, ""),
                     content=m["content"],
                     is_error=bool(m.get("is_error")),
                 )
@@ -124,12 +128,14 @@ def _rebuild_history(history: list[dict]) -> list:
         flush_results()
 
         if role == "user":
+            tool_names = {}
             out.append(UserMessage(content=m["content"]))
         elif role == "assistant":
             content_blocks: list = []
             if m["content"]:
                 content_blocks.append(TextContent(text=m["content"]))
             raw_calls = m.get("tool_calls") or []
+            tool_names = {tc["id"]: tc["name"] for tc in raw_calls}
             tool_calls = [
                 ToolCall(id=tc["id"], name=tc["name"], arguments=tc["arguments"])
                 for tc in raw_calls
