@@ -38,7 +38,7 @@ services:
       sh -c "python scripts/run_migrations.py &&
              uvicorn services.api.main:app --host 0.0.0.0 --port 8000"
     environment:
-      CORS_ORIGINS: "https://${PUBLIC_HOSTNAME}"
+      CORS_ORIGINS: '["https://${PUBLIC_HOSTNAME}"]'
 
   chatbot:
     build:
