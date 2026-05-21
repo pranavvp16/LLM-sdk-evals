@@ -97,6 +97,7 @@ async def stream_anthropic(
     _tool_buffers: dict[int, dict] = {}
     _text_buffer = ""
     _thinking_buffer = ""
+    _signature_buffer = ""
 
     try:
         async with client.messages.stream(**params) as stream:
@@ -132,6 +133,12 @@ async def stream_anthropic(
                     if delta.type == "thinking_delta":
                         _thinking_buffer += delta.thinking
                         yield StreamEventThinkingDelta(delta=delta.thinking)
+
+                    elif delta.type == "signature_delta":
+                        # Captured so the next hop can replay the signed
+                        # thinking block — without this Anthropic rejects
+                        # multi-hop requests that include extended thinking.
+                        _signature_buffer += getattr(delta, "signature", "") or ""
 
                     elif delta.type == "text_delta":
                         _text_buffer += delta.text
@@ -187,6 +194,8 @@ async def stream_anthropic(
             output.content.append(TextContent(text=_text_buffer))
         if _thinking_buffer:
             output.thinking = _thinking_buffer
+        if _signature_buffer:
+            output.thinking_signature = _signature_buffer
 
         output.latency_ms = (time.monotonic() - started_at) * 1000
         yield StreamEventDone(message=output)

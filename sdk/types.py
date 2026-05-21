@@ -75,6 +75,11 @@ class AssistantMessage:
     content: list[ContentBlock] = field(default_factory=list)
     tool_calls: list[ToolCall] = field(default_factory=list)
     thinking: Optional[str] = None          # reasoning trace, normalized across providers
+    # Anthropic extended-thinking blocks carry an opaque per-block signature
+    # that MUST be replayed on the next hop when the same assistant turn is
+    # sent back. Empty/None for non-Anthropic providers and for Anthropic
+    # responses without thinking enabled.
+    thinking_signature: Optional[str] = None
     # ── filled in after stream completes ─────────────────────────────────────
     provider: str = ""
     model: str = ""

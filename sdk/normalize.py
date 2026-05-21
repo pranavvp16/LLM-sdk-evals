@@ -134,9 +134,19 @@ def to_anthropic_messages(ctx: Context) -> tuple[str, list[dict]]:
         elif isinstance(msg, AssistantMessage):
             content_blocks: list[dict] = []
 
-            # Thinking block (extended reasoning)
+            # Thinking block (extended reasoning). Anthropic requires the
+            # per-block `signature` from the original response to be replayed
+            # on subsequent hops; without it the API rejects the request with
+            # "Extended thinking blocks must include a signature when sent in
+            # the messages list." When no signature was captured (e.g. the
+            # message originated from a different provider), we still include
+            # the thinking text so callers can see it, but Anthropic will
+            # reject — that's the same failure mode as before this branch.
             if msg.thinking:
-                content_blocks.append({"type": "thinking", "thinking": msg.thinking})
+                thinking_block: dict = {"type": "thinking", "thinking": msg.thinking}
+                if msg.thinking_signature:
+                    thinking_block["signature"] = msg.thinking_signature
+                content_blocks.append(thinking_block)
 
             # Text blocks
             for block in msg.content:
