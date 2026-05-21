@@ -49,29 +49,30 @@ services:
     environment:
       NEXT_PUBLIC_API_URL: "https://${PUBLIC_HOSTNAME}/api"
 
+  # Internal-only services: no host port mapping. Reachable on the docker
+  # network by service name (postgres, clickhouse, redis, prometheus,
+  # grafana). Prometheus + Grafana are still reachable from the public
+  # internet via Caddy at /grafana/ and (internally) at /prometheus would
+  # be added if ever wanted. NSG already blocks the raw ports, but
+  # dropping the host bind also avoids the docker port-allocator race
+  # we hit after daemon restarts.
   postgres:
-    ports:
-      - "127.0.0.1:5432:5432"
+    ports: !reset []
 
   clickhouse:
-    ports:
-      - "127.0.0.1:8123:8123"
-      - "127.0.0.1:9000:9000"
+    ports: !reset []
 
   redis:
-    ports:
-      - "127.0.0.1:6379:6379"
+    ports: !reset []
 
   prometheus:
-    ports:
-      - "127.0.0.1:9090:9090"
+    ports: !reset []
 
   grafana:
     environment:
       GF_SERVER_ROOT_URL: "https://${PUBLIC_HOSTNAME}/grafana/"
       GF_SERVER_SERVE_FROM_SUB_PATH: "true"
-    ports:
-      - "127.0.0.1:3001:3000"
+    ports: !reset []
 
 volumes:
   caddy_data:
