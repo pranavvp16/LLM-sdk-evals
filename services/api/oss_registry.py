@@ -50,4 +50,16 @@ def register_oss_models() -> None:
             supports_reasoning=True,
         )
     )
+    register_model(
+        ModelDef(
+            id="deepseek-v4-flash",
+            provider="opencode-go",
+            api=ApiProtocol.OPENAI_COMPLETIONS,
+            context_window=128_000,
+            max_tokens=8_192,
+            cost=ModelCost(input=0.27, output=1.1, cache_read=0.07),
+            supports_tools=True,
+            supports_reasoning=True,
+        )
+    )
     _REGISTERED = True

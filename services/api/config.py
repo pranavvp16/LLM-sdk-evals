@@ -67,7 +67,7 @@ class Settings(BaseSettings):
     opencode_zen_base_url: str = "https://opencode.ai/zen/v1"
     opencode_zen_model: str = "kimi-k2.5"
     opencode_go_base_url: str = "https://opencode.ai/zen/go/v1"
-    opencode_go_model: str = "glm-5"
+    opencode_go_model: str = "deepseek-v4-flash"
     oss_provider: str = ""
     oss_model: str = ""
 
@@ -121,11 +121,12 @@ class Settings(BaseSettings):
             )
 
     def resolve_oss(self) -> tuple[str, str]:
-        """Return (provider, model_id) for CLI eval OSS side.
+        """Return (provider, model_id) for the OSS side of the eval.
 
-        Defaults to HuggingFace so `python eval/run_eval.py` works out of the box
-        with only HUGGINGFACE_API_KEY. Set OSS_PROVIDER to pick vLLM or OpenCode.
-        Unknown providers or missing backend config raise before the run starts.
+        Prefers a tool-capable backend so the agent / tool-use eval can run.
+        Cascade: explicit ``OSS_PROVIDER`` → opencode-go (if OPENCODE_API_KEY)
+        → huggingface (if HUGGINGFACE_API_KEY) → ValueError. Unknown providers
+        or missing backend config raise before the run starts.
         """
         defaults: dict[str, str] = {
             "vllm": self.vllm_model,
@@ -142,9 +143,19 @@ class Settings(BaseSettings):
                 )
             self._require_oss_config(provider)
             return provider, self.oss_model or defaults[provider]
-        provider = "huggingface"
-        self._require_oss_config(provider)
-        return provider, defaults[provider]
+        if self.opencode_api_key:
+            provider = "opencode-go"
+            self._require_oss_config(provider)
+            return provider, defaults[provider]
+        if self.huggingface_api_key:
+            provider = "huggingface"
+            self._require_oss_config(provider)
+            return provider, defaults[provider]
+        raise ValueError(
+            "No OSS backend configured. Set OPENCODE_API_KEY (preferred — "
+            "supports tool calling) or HUGGINGFACE_API_KEY, or set "
+            "OSS_PROVIDER explicitly."
+        )
 
     def asyncpg_dsn(self) -> str:
         """asyncpg does not accept the SQLAlchemy '+asyncpg' suffix."""

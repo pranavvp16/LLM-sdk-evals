@@ -61,6 +61,14 @@ def to_openai_messages(ctx: Context) -> list[dict]:
             text_parts = [b.text for b in msg.content if isinstance(b, TextContent)]
             m["content"] = "".join(text_parts)
 
+            # Reasoning content roundtrip — DeepSeek (and any future OpenAI-
+            # compatible reasoning model) rejects multi-hop tool requests
+            # when the prior assistant turn's reasoning_content is dropped.
+            # Vanilla OpenAI / vLLM / Ollama ignore unknown fields, so this
+            # is safe to include unconditionally when msg.thinking is set.
+            if msg.thinking:
+                m["reasoning_content"] = msg.thinking
+
             # Tool calls
             if msg.tool_calls:
                 m["tool_calls"] = [

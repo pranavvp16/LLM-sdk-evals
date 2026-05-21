@@ -148,6 +148,9 @@ export interface StreamRequest {
   system_prompt?: string;
   temperature?: number;
   max_tokens?: number;
+  // true or numeric budget = enable reasoning; false = ask provider to disable;
+  // undefined = provider default.
+  thinking?: boolean | number;
 }
 
 export type StreamChunk =

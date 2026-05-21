@@ -230,7 +230,7 @@ class Context:
     """
     Everything a provider needs to make a call.
     Mirrors pi-ai's Context interface:
-        { systemPrompt, messages, tools?, temperature?, maxTokens? }
+        { systemPrompt, messages, tools?, temperature?, maxTokens?, thinking? }
     """
     system_prompt: str
     messages: list[Message]
@@ -238,6 +238,11 @@ class Context:
     temperature: Optional[float] = None
     max_tokens: Optional[int] = None
     stream: bool = True
+    # Reasoning / extended thinking. None = provider default (Anthropic: off;
+    # OSS reasoning models: on). True / int = enabled with budget tokens
+    # (default 2048 if True). False = explicitly disable when the provider
+    # supports it. Surfaced for the assistant UI's "thinking" toggle.
+    thinking: Optional[bool | int] = None
 
 
 # ── Inference log (captured by the wrapper, sent to ingestion) ────────────────

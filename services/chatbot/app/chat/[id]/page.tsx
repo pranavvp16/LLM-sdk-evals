@@ -17,7 +17,7 @@ interface PageProps {
 
 type Turn =
   | { kind: "user"; content: string }
-  | { kind: "assistant"; content: string; pending?: boolean }
+  | { kind: "assistant"; content: string; thinking?: string; pending?: boolean }
   | {
       kind: "tool";
       id: string;
@@ -38,6 +38,7 @@ export default function ChatPage({ params }: PageProps) {
   const [turns, setTurns] = useState<Turn[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
+  const [thinking, setThinking] = useState(false);
   const [usage, setUsage] = useState<{ input: number; output: number; cost_usd: number } | null>(
     null,
   );
@@ -91,6 +92,7 @@ export default function ChatPage({ params }: PageProps) {
           message: text,
           provider,
           model,
+          thinking: thinking ? true : undefined,
         },
         abortRef.current.signal,
       )) {
@@ -104,6 +106,8 @@ export default function ChatPage({ params }: PageProps) {
           }
         } else if (chunk.type === "text_delta") {
           setTurns((t) => appendText(t, chunk.delta));
+        } else if (chunk.type === "thinking_delta") {
+          setTurns((t) => appendThinking(t, chunk.delta));
         } else if (chunk.type === "tool_call") {
           setTurns((t) => addToolCall(t, chunk.id, chunk.name, chunk.args));
         } else if (chunk.type === "tool_result") {
@@ -184,6 +188,15 @@ export default function ChatPage({ params }: PageProps) {
           }}
           disabled={busy}
         />
+        <label className="flex select-none items-center gap-1 text-xs text-neutral-600">
+          <input
+            type="checkbox"
+            checked={thinking}
+            onChange={(e) => setThinking(e.target.checked)}
+            disabled={busy}
+          />
+          thinking
+        </label>
         <button
           type="submit"
           className="rounded bg-black px-3 py-2 text-sm font-medium text-white disabled:opacity-40"
@@ -224,10 +237,34 @@ function TurnView({ turn }: { turn: Turn }) {
   }
   // assistant
   return (
-    <div className="flex justify-start">
+    <div className="flex flex-col items-start gap-1">
+      {turn.thinking && <ThinkingBlock text={turn.thinking} />}
       <div className="max-w-[80%] whitespace-pre-wrap rounded-lg bg-neutral-100 px-3 py-2">
         {turn.content || (turn.pending ? "…" : "")}
       </div>
+    </div>
+  );
+}
+
+function ThinkingBlock({ text }: { text: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="max-w-[80%] rounded border border-amber-200 bg-amber-50 text-xs">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="flex w-full items-center gap-2 px-2 py-1 hover:bg-amber-100"
+      >
+        <span className="text-amber-600">{open ? "▾" : "▸"}</span>
+        <span className="font-mono text-[10px] uppercase tracking-wide text-amber-700">
+          thinking ({text.length} chars)
+        </span>
+      </button>
+      {open && (
+        <pre className="whitespace-pre-wrap break-words border-t border-amber-200 px-2 py-1 text-[11px] text-amber-900">
+          {text}
+        </pre>
+      )}
     </div>
   );
 }
@@ -302,6 +339,17 @@ function appendText(turns: Turn[], delta: string): Turn[] {
   return [...turns, { kind: "assistant", content: delta, pending: true }];
 }
 
+function appendThinking(turns: Turn[], delta: string): Turn[] {
+  const last = turns[turns.length - 1];
+  if (last && last.kind === "assistant" && last.pending) {
+    const next = [...turns];
+    next[next.length - 1] = { ...last, thinking: (last.thinking ?? "") + delta };
+    return next;
+  }
+  // Open a new pending assistant turn to host the thinking stream.
+  return [...turns, { kind: "assistant", content: "", thinking: delta, pending: true }];
+}
+
 function addToolCall(
   turns: Turn[],
   id: string,
@@ -313,7 +361,7 @@ function addToolCall(
   const lastIdx = next.length - 1;
   if (lastIdx >= 0 && next[lastIdx].kind === "assistant") {
     const a = next[lastIdx] as Extract<Turn, { kind: "assistant" }>;
-    if (!a.content) {
+    if (!a.content && !a.thinking) {
       // Drop empty placeholder so we don't render a stray "…".
       next.pop();
     } else {

@@ -170,6 +170,7 @@ class LLMWrapper:
             temperature=ctx.temperature,
             max_tokens=ctx.max_tokens,
             stream=False,
+            thinking=ctx.thinking,
         )
         final: Optional[AssistantMessage] = None
         async for event in self.stream(model, ctx, session_id, conversation_id):

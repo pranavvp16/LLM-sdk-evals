@@ -67,6 +67,19 @@ async def stream_anthropic(
         params["temperature"] = ctx.temperature
     if ctx.tools:
         params["tools"] = to_anthropic_tools(ctx.tools)
+    # Extended thinking (opt-in). The installed anthropic SDK predates the
+    # top-level `thinking` kwarg, so we pass it via extra_body — the body
+    # field lands on the wire identically.
+    if ctx.thinking:
+        budget = ctx.thinking if isinstance(ctx.thinking, int) and ctx.thinking > 1 else 2048
+        # Anthropic requires max_tokens > budget_tokens for thinking mode.
+        if params["max_tokens"] <= budget:
+            params["max_tokens"] = budget + 1024
+        # temperature must be 1.0 (or omitted) when thinking is enabled.
+        params.pop("temperature", None)
+        params["extra_body"] = {
+            "thinking": {"type": "enabled", "budget_tokens": budget}
+        }
 
     # Initialize the assembled output message
     output = AssistantMessage(

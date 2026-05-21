@@ -1,4 +1,9 @@
-"""Settings helpers and runtime OSS model registration."""
+"""Settings helpers and runtime OSS model registration.
+
+Each Settings(...) call below explicitly overrides any keys that pydantic-
+settings would otherwise load from a local ``.env``, so the tests behave the
+same whether the developer's ``.env`` has OPENCODE_API_KEY set or not.
+"""
 
 from __future__ import annotations
 
@@ -12,19 +17,41 @@ from services.api.oss_registry import register_oss_models
 register_oss_models()
 
 
+# Common shape: zero out anything the .env might fill in.
+_BLANK = {
+    "anthropic_api_key": "",
+    "huggingface_api_key": "",
+    "opencode_api_key": "",
+    "openai_api_key": "",
+    "google_api_key": "",
+    "vllm_base_url": "",
+    "oss_provider": "",
+    "oss_model": "",
+}
+
+
+def _settings(**overrides) -> Settings:
+    return Settings(**{**_BLANK, **overrides})
+
+
 def test_resolve_oss_defaults_to_huggingface():
-    s = Settings(huggingface_api_key="hf_test")
+    s = _settings(huggingface_api_key="hf_test")
     assert s.resolve_oss() == ("huggingface", "qwen2.5-0.5b-instruct")
 
 
+def test_resolve_oss_defaults_to_opencode_go_when_key_present():
+    s = _settings(opencode_api_key="sk-test", huggingface_api_key="hf_test")
+    assert s.resolve_oss() == ("opencode-go", "deepseek-v4-flash")
+
+
 def test_resolve_oss_vllm_without_url_raises():
-    s = Settings(oss_provider="vllm", huggingface_api_key="hf")
+    s = _settings(oss_provider="vllm", huggingface_api_key="hf")
     with pytest.raises(ValueError, match="VLLM_BASE_URL"):
         s.resolve_oss()
 
 
 def test_resolve_oss_vllm_with_url_ok():
-    s = Settings(
+    s = _settings(
         oss_provider="vllm",
         vllm_base_url="http://localhost:8001/v1",
         huggingface_api_key="hf",
@@ -33,25 +60,25 @@ def test_resolve_oss_vllm_with_url_ok():
 
 
 def test_resolve_oss_opencode_without_key_raises():
-    s = Settings(oss_provider="opencode", huggingface_api_key="hf")
+    s = _settings(oss_provider="opencode", huggingface_api_key="hf")
     with pytest.raises(ValueError, match="OPENCODE_API_KEY"):
         s.resolve_oss()
 
 
 def test_resolve_oss_unknown_provider_raises():
-    s = Settings(oss_provider="bad", huggingface_api_key="hf")
+    s = _settings(oss_provider="bad", huggingface_api_key="hf")
     with pytest.raises(ValueError, match="Invalid OSS_PROVIDER"):
         s.resolve_oss()
 
 
-def test_resolve_oss_default_without_hf_key_raises():
-    with pytest.raises(ValueError, match="HUGGINGFACE_API_KEY"):
-        Settings().resolve_oss()
+def test_resolve_oss_no_keys_raises():
+    with pytest.raises(ValueError, match="No OSS backend configured"):
+        _settings().resolve_oss()
 
 
 def test_base_urls_opencode_only_with_key():
-    assert Settings().base_urls() == {}
-    s = Settings(opencode_api_key="sk-test")
+    assert _settings().base_urls() == {}
+    s = _settings(opencode_api_key="sk-test")
     urls = s.base_urls()
     assert urls["opencode"] == "https://opencode.ai/zen/v1"
     assert urls["opencode-go"] == "https://opencode.ai/zen/go/v1"
@@ -70,7 +97,14 @@ def test_oss_registry_opencode_zen():
     assert m.api.value == "openai-completions"
 
 
-def test_oss_registry_opencode_go():
+def test_oss_registry_opencode_go_glm5():
     m = get_model("opencode-go", "glm-5")
     assert m.provider == "opencode-go"
     assert m.supports_tools is True
+
+
+def test_oss_registry_opencode_go_deepseek():
+    m = get_model("opencode-go", "deepseek-v4-flash")
+    assert m.provider == "opencode-go"
+    assert m.supports_tools is True
+    assert m.supports_reasoning is True
