@@ -641,8 +641,44 @@ Eval (the deliverable):
 
 ```bash
 python eval/run_eval.py     # → eval/results.json
-python eval/report.py       # → docs/eval_report.pdf
+python eval/report.py       # → docs/eval_report.pdf + docs/eval_cost_latency.md
 ```
+
+### Public deployment (Azure VM)
+
+A single `Standard_NC4as_T4_v3` VM hosts the whole stack — FastAPI, Next.js,
+Postgres, ClickHouse, Redis, Prometheus, Grafana, *and* vLLM serving
+Qwen2.5-1.5B-Instruct (registered with `supports_tools=True` so the L3 agent
+eval can drive it). Caddy fronts everything: TLS via Let's Encrypt, bearer-
+token auth on `/v1/*`, reverse proxies `/api/*`, `/grafana/*`, `/` → chatbot.
+
+```bash
+az login
+./infra/deploy/deploy.sh --anthropic-key "$ANTHROPIC_API_KEY"
+# prints https://ollive-XXX.eastus.cloudapp.azure.com + bearer token
+```
+
+Full runbook in `infra/deploy/README.md`. The prod overlay
+(`infra/deploy/docker-compose.prod.yml`) is composed on top of the root
+`docker-compose.yml` — it adds the `vllm` and `caddy` services, drops
+`--reload` from the API, and rebinds Postgres/ClickHouse/Redis/Prometheus
+to `127.0.0.1` for defense in depth.
+
+Cost: ~$0.526/hr on-demand (~$380/mo). vLLM uses ~4 GB of the 16 GB T4,
+leaving headroom for batched eval traffic.
+
+### Guardrails
+
+`services/api/guardrails/` is the deterministic safety layer that sits in
+front of `LLMWrapper`. Three pure functions:
+
+- `check_input(text)` — length cap, control chars, prompt-injection regex
+- `check_output(text)` — banned chat-template tokens, destructive commands
+- `validate_tool_args(name, args)` — ISO-8601 `when`, bounded `duration_min`
+
+`routers/chat.py` calls them inline and emits `{"type": "guardrail_block"}`
+SSE events on block. The L2 safety axis in `eval/judge.py` is the
+backstop that measures whether they actually work.
 
 ---
 

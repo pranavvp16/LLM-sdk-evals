@@ -25,6 +25,19 @@ def register_oss_models() -> None:
             supports_tools=False,
         )
     )
+    # Default vLLM target for this deployment. supports_tools=True relies on
+    # vLLM being launched with `--enable-auto-tool-choice --tool-call-parser hermes`.
+    register_model(
+        ModelDef(
+            id="qwen2.5-1.5b-instruct",
+            provider="vllm",
+            api=ApiProtocol.OPENAI_COMPLETIONS,
+            context_window=32_768,
+            max_tokens=2_048,
+            cost=ModelCost(),
+            supports_tools=True,
+        )
+    )
     register_model(
         ModelDef(
             id="kimi-k2.5",

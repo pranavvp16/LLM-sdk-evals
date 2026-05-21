@@ -1,0 +1,125 @@
+#cloud-config
+# First-boot bootstrap for the ollive single-VM deployment (CPU-only).
+# Installs Docker + Compose, clones the repo, brings the stack up.
+# vLLM is not deployed; the OSS provider is OpenCode-Go (hosted).
+
+package_update: true
+package_upgrade: false
+
+packages:
+  - ca-certificates
+  - curl
+  - git
+  - gnupg
+  - lsb-release
+  - jq
+  - uuid-runtime
+
+write_files:
+  # Deploy-time values templated by deploy.sh before upload.
+  - path: /opt/ollive/.ollive-deploy.env
+    permissions: "0600"
+    content: |
+      OLLIVE_REPO_URL=__REPO_URL__
+      OLLIVE_BRANCH=__BRANCH__
+      OLLIVE_PUBLIC_HOSTNAME=__PUBLIC_HOSTNAME__
+      OLLIVE_ANTHROPIC_API_KEY=__ANTHROPIC_API_KEY__
+      OLLIVE_HF_TOKEN=__HF_TOKEN__
+      OLLIVE_OPENCODE_API_KEY=__OPENCODE_API_KEY__
+      OLLIVE_ACR_LOGIN_SERVER=__ACR_LOGIN_SERVER__
+      OLLIVE_ACR_USERNAME=__ACR_USERNAME__
+      OLLIVE_ACR_PASSWORD=__ACR_PASSWORD__
+      OLLIVE_IMAGE_TAG=__IMAGE_TAG__
+
+  # CI deploy SSH pubkey - appended to authorized_keys so GH Actions can ssh in.
+  - path: /opt/ollive/ci-deploy.pub
+    permissions: "0644"
+    content: |
+      __CI_SSH_PUBKEY__
+
+  # All multi-line bootstrap logic lives in this script so runcmd stays simple.
+  - path: /opt/ollive/bootstrap.sh
+    permissions: "0755"
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+      source /opt/ollive/.ollive-deploy.env
+
+      # -- Docker engine + compose plugin ------------------------------
+      install -m 0755 -d /etc/apt/keyrings
+      curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
+          | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+      echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" \
+          > /etc/apt/sources.list.d/docker.list
+      apt-get update
+      DEBIAN_FRONTEND=noninteractive apt-get install -y \
+          docker-ce docker-ce-cli containerd.io \
+          docker-buildx-plugin docker-compose-plugin
+      systemctl enable --now docker
+
+      # -- CI deploy key for GitHub Actions ----------------------------
+      if [ -s /opt/ollive/ci-deploy.pub ]; then
+          mkdir -p /home/azureuser/.ssh
+          touch /home/azureuser/.ssh/authorized_keys
+          if ! grep -qF "$(cat /opt/ollive/ci-deploy.pub)" /home/azureuser/.ssh/authorized_keys 2>/dev/null; then
+              cat /opt/ollive/ci-deploy.pub >> /home/azureuser/.ssh/authorized_keys
+          fi
+          chown -R azureuser:azureuser /home/azureuser/.ssh
+          chmod 700 /home/azureuser/.ssh
+          chmod 600 /home/azureuser/.ssh/authorized_keys
+          usermod -aG docker azureuser || true
+      fi
+
+      # -- Clone the repo ----------------------------------------------
+      git clone --branch "$OLLIVE_BRANCH" "$OLLIVE_REPO_URL" /opt/ollive/repo
+      cd /opt/ollive/repo
+      cp .env.example .env
+
+      # -- Generate secrets + write deployment .env --------------------
+      GRAFANA_PASSWORD=$(uuidgen | cut -c1-16)
+
+      cat >> .env <<ENVEOF
+
+      # === appended by cloud-init ===
+      ANTHROPIC_API_KEY=$OLLIVE_ANTHROPIC_API_KEY
+      HUGGINGFACE_API_KEY=$OLLIVE_HF_TOKEN
+      OPENCODE_API_KEY=$OLLIVE_OPENCODE_API_KEY
+      PUBLIC_HOSTNAME=$OLLIVE_PUBLIC_HOSTNAME
+      GF_SECURITY_ADMIN_PASSWORD=$GRAFANA_PASSWORD
+      NEXT_PUBLIC_API_URL=https://$OLLIVE_PUBLIC_HOSTNAME/api
+      ACR_LOGIN_SERVER=$OLLIVE_ACR_LOGIN_SERVER
+      IMAGE_TAG=$OLLIVE_IMAGE_TAG
+      ENVEOF
+
+      cat > /opt/ollive/credentials.txt <<CREDEOF
+      Public URL:        https://$OLLIVE_PUBLIC_HOSTNAME
+      Grafana admin pw:  $GRAFANA_PASSWORD
+      ACR registry:      $OLLIVE_ACR_LOGIN_SERVER
+      CREDEOF
+      chmod 600 /opt/ollive/credentials.txt
+
+      # -- docker login to ACR (so we can pull CI-built images) --------
+      if [ -n "$OLLIVE_ACR_LOGIN_SERVER" ] && [ -n "$OLLIVE_ACR_PASSWORD" ]; then
+          echo "$OLLIVE_ACR_PASSWORD" \
+              | docker login "$OLLIVE_ACR_LOGIN_SERVER" \
+                  --username "$OLLIVE_ACR_USERNAME" --password-stdin
+      fi
+
+      # -- Bring the stack up ------------------------------------------
+      # If ACR has an image for this tag we use the CI overlay (image: refs).
+      # Otherwise we fall back to building locally from source.
+      COMPOSE_FILES=(-f docker-compose.yml -f infra/deploy/docker-compose.prod.yml)
+      if [ -n "$OLLIVE_ACR_LOGIN_SERVER" ] && \
+         docker manifest inspect "$OLLIVE_ACR_LOGIN_SERVER/ollive-api:$OLLIVE_IMAGE_TAG" >/dev/null 2>&1
+      then
+          COMPOSE_FILES+=(-f infra/deploy/docker-compose.ci.yml)
+          docker compose "${COMPOSE_FILES[@]}" pull
+          docker compose "${COMPOSE_FILES[@]}" up -d
+      else
+          docker compose "${COMPOSE_FILES[@]}" up -d --build
+      fi
+
+runcmd:
+  - /opt/ollive/bootstrap.sh 2>&1 | tee /var/log/ollive-bootstrap.log
+
+final_message: "ollive bootstrap complete. cat /opt/ollive/credentials.txt for URL + secrets."

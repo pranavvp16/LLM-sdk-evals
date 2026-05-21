@@ -1,0 +1,36 @@
+# Public ingress for the ollive deployment (CPU-only — no vLLM).
+# TLS auto from Let's Encrypt against {$PUBLIC_HOSTNAME}.
+# All upstreams are docker service names on the default compose network.
+
+{$PUBLIC_HOSTNAME} {
+    encode zstd gzip
+    request_body {
+        max_size 1MB
+    }
+
+    # ── Grafana (uses its own login form) ────────────────────────────────
+    handle /grafana/* {
+        reverse_proxy grafana:3000
+    }
+
+    # ── FastAPI under /api ────────────────────────────────────────────────
+    handle /api/* {
+        uri strip_prefix /api
+        reverse_proxy api:8000
+    }
+
+    # ── Unauthed health probe (used by monitors) ──────────────────────────
+    handle /health {
+        reverse_proxy api:8000
+    }
+
+    # ── Everything else → Next.js chatbot ────────────────────────────────
+    handle {
+        reverse_proxy chatbot:3000
+    }
+}
+
+# Catch-all on raw IP / wrong hostname: refuse rather than serve a default cert.
+:80, :443 {
+    respond 421
+}

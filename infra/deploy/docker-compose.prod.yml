@@ -1,0 +1,78 @@
+# Production overlay for a single-VM public deployment (CPU-only, no vLLM).
+#
+# Use it on top of the root compose file:
+#     docker compose -f docker-compose.yml \
+#                    -f infra/deploy/docker-compose.prod.yml up -d --build
+#
+# When deploying via CI, also layer infra/deploy/docker-compose.ci.yml on top
+# so api/chatbot pull pre-built images from ACR instead of building locally.
+#
+# Adds:
+#   • caddy          — TLS termination, reverse proxy to api/chatbot/grafana
+# Overrides:
+#   • api            — drops --reload (dev-only), CORS pinned to public host
+#   • chatbot        — bakes NEXT_PUBLIC_API_URL=https://${PUBLIC_HOSTNAME}/api at build time
+#   • postgres / clickhouse / redis / prometheus — port maps rebound to 127.0.0.1
+#                                                  (defense in depth; NSG also blocks them)
+#   • grafana        — served under /grafana/ sub-path
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      PUBLIC_HOSTNAME: ${PUBLIC_HOSTNAME}
+    volumes:
+      - ./infra/deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      api:
+        condition: service_healthy
+
+  api:
+    command: >
+      sh -c "python scripts/run_migrations.py &&
+             uvicorn services.api.main:app --host 0.0.0.0 --port 8000"
+    environment:
+      CORS_ORIGINS: "https://${PUBLIC_HOSTNAME}"
+
+  chatbot:
+    build:
+      context: services/chatbot
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: "https://${PUBLIC_HOSTNAME}/api"
+    environment:
+      NEXT_PUBLIC_API_URL: "https://${PUBLIC_HOSTNAME}/api"
+
+  postgres:
+    ports:
+      - "127.0.0.1:5432:5432"
+
+  clickhouse:
+    ports:
+      - "127.0.0.1:8123:8123"
+      - "127.0.0.1:9000:9000"
+
+  redis:
+    ports:
+      - "127.0.0.1:6379:6379"
+
+  prometheus:
+    ports:
+      - "127.0.0.1:9090:9090"
+
+  grafana:
+    environment:
+      GF_SERVER_ROOT_URL: "https://${PUBLIC_HOSTNAME}/grafana/"
+      GF_SERVER_SERVE_FROM_SUB_PATH: "true"
+    ports:
+      - "127.0.0.1:3001:3000"
+
+volumes:
+  caddy_data:
+  caddy_config:

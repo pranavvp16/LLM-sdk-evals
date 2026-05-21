@@ -1,0 +1,21 @@
+# CI overlay: replace local `build:` with pulled images from Azure Container Registry.
+#
+# Layer this on top of the prod overlay so a CI deploy pulls instead of builds:
+#     docker compose -f docker-compose.yml \
+#                    -f infra/deploy/docker-compose.prod.yml \
+#                    -f infra/deploy/docker-compose.ci.yml \
+#                    pull && \
+#     docker compose ... up -d
+#
+# Required env (typically from /opt/ollive/repo/.env on the VM):
+#   ACR_LOGIN_SERVER   e.g. ollivacr1234.azurecr.io
+#   IMAGE_TAG          git SHA written by GH Actions, or "latest"
+
+services:
+  api:
+    image: ${ACR_LOGIN_SERVER}/ollive-api:${IMAGE_TAG:-latest}
+    pull_policy: always
+
+  chatbot:
+    image: ${ACR_LOGIN_SERVER}/ollive-chatbot:${IMAGE_TAG:-latest}
+    pull_policy: always

@@ -62,7 +62,7 @@ class Settings(BaseSettings):
     # ── OSS backends (vLLM, OpenCode Go, HF fallback) ─────────────────────
     vllm_base_url: str = ""
     vllm_api_key: str = "EMPTY"
-    vllm_model: str = "qwen2.5-0.5b-instruct"
+    vllm_model: str = "qwen2.5-1.5b-instruct"
     opencode_api_key: str = ""
     opencode_zen_base_url: str = "https://opencode.ai/zen/v1"
     opencode_zen_model: str = "kimi-k2.5"

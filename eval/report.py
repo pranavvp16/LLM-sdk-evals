@@ -14,9 +14,16 @@ from __future__ import annotations
 
 import json
 import statistics
+from datetime import datetime
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Iterable
+
+from eval.cost_constants import (
+    OSS_HARDWARE_COST_PER_HOUR_USD,
+    OSS_PRICING_NOTE,
+    OSS_SKU,
+)
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -36,6 +43,7 @@ from reportlab.platypus import (
 
 RESULTS_PATH = Path(__file__).resolve().parent / "results.json"
 OUTPUT_PATH = Path(__file__).resolve().parent.parent / "docs" / "eval_report.pdf"
+COST_MD_PATH = Path(__file__).resolve().parent.parent / "docs" / "eval_cost_latency.md"
 
 OSS_COLOR = "#7C3AED"
 FRONTIER_COLOR = "#0EA5E9"
@@ -94,6 +102,76 @@ def _heuristic_pass_rate(rows: Iterable[dict], side: str) -> float:
 
 def _total_cost(rows: Iterable[dict], side: str) -> float:
     return sum(r[side].get("cost_usd", 0.0) for r in rows)
+
+
+def _cost_latency_stats(data: dict) -> dict[str, Any]:
+    """Aggregate latency + token + cost numbers for the cost-comparison table.
+
+    OSS rows use a token-priced ``cost_usd`` of 0 (self-hosted). We substitute
+    the amortized hardware cost across the eval's wall-clock runtime, then
+    express both sides as $/1M output tokens for direct comparison.
+    """
+    static_rows = data.get("static_results", [])
+    agent_rows = data.get("agent_results", [])
+    meta = data.get("metadata", {})
+    rows = list(static_rows) + list(agent_rows)
+
+    def _side(side: str) -> dict[str, Any]:
+        ok = [r[side] for r in rows if r[side].get("status", "success") == "success"]
+        latencies = sorted(r["latency_ms"] for r in ok)
+        median = statistics.median(latencies) if latencies else 0.0
+        p95 = latencies[max(0, int(len(latencies) * 0.95) - 1)] if latencies else 0.0
+        total_output = sum(r.get("output_tokens", 0) for r in ok)
+        total_latency_s = sum(r["latency_ms"] for r in ok) / 1000.0
+        throughput = total_output / total_latency_s if total_latency_s else 0.0
+        return {
+            "median_ms": median,
+            "p95_ms": p95,
+            "total_output_tokens": total_output,
+            "throughput_tok_s": throughput,
+            "token_priced_cost_usd": sum(r.get("cost_usd", 0.0) for r in ok),
+        }
+
+    oss = _side("oss")
+    fr = _side("frontier")
+
+    hours_elapsed = 0.0
+    started = meta.get("started_at")
+    completed = meta.get("completed_at")
+    if started and completed:
+        try:
+            t0 = datetime.fromisoformat(started.replace("Z", "+00:00"))
+            t1 = datetime.fromisoformat(completed.replace("Z", "+00:00"))
+            hours_elapsed = max(0.0, (t1 - t0).total_seconds() / 3600.0)
+        except ValueError:
+            hours_elapsed = 0.0
+
+    oss_run_cost = hours_elapsed * OSS_HARDWARE_COST_PER_HOUR_USD
+    oss["run_cost_usd"] = oss_run_cost
+    # $/1M = ($/hr ÷ (tok/s × 3600 s/hr)) × 1e6 tokens
+    oss["amortized_per_million_output_usd"] = (
+        OSS_HARDWARE_COST_PER_HOUR_USD * 1_000_000.0
+        / (oss["throughput_tok_s"] * 3600.0)
+        if oss["throughput_tok_s"] > 0
+        else 0.0
+    )
+    fr["run_cost_usd"] = fr["token_priced_cost_usd"]
+    fr["amortized_per_million_output_usd"] = (
+        fr["token_priced_cost_usd"] / (fr["total_output_tokens"] / 1_000_000.0)
+        if fr["total_output_tokens"] > 0
+        else 0.0
+    )
+
+    return {
+        "oss": oss,
+        "frontier": fr,
+        "hours_elapsed": hours_elapsed,
+        "hardware_rate_usd_per_hr": OSS_HARDWARE_COST_PER_HOUR_USD,
+        "sku": OSS_SKU,
+        "pricing_note": OSS_PRICING_NOTE,
+        "oss_label": f"{meta.get('oss_provider', '?')}/{meta.get('oss_model', '?')}",
+        "frontier_label": meta.get("frontier_model", "?"),
+    }
 
 
 # ── charts ───────────────────────────────────────────────────────────────
@@ -322,7 +400,77 @@ def _static_category_page(data: dict, styles) -> list:
         )
     )
     elements.append(tbl)
+
+    elements.append(Spacer(1, 14))
+    elements.append(Paragraph("<b>Cost &amp; Latency — OSS deployment vs Frontier</b>", styles["Heading2"]))
+    elements.append(Spacer(1, 6))
+    elements += _cost_latency_table(data, styles)
     return elements
+
+
+def _cost_latency_table(data: dict, styles) -> list:
+    stats = _cost_latency_stats(data)
+    oss, fr = stats["oss"], stats["frontier"]
+    rows = [
+        ["Metric", f"OSS ({stats['oss_label']})", f"Frontier ({stats['frontier_label']})"],
+        ["Median latency", f"{oss['median_ms']:.0f} ms", f"{fr['median_ms']:.0f} ms"],
+        ["p95 latency", f"{oss['p95_ms']:.0f} ms", f"{fr['p95_ms']:.0f} ms"],
+        ["Total output tokens", f"{oss['total_output_tokens']:,}", f"{fr['total_output_tokens']:,}"],
+        ["Effective throughput", f"{oss['throughput_tok_s']:.1f} tok/s", "n/a (hosted)"],
+        ["Hardware cost", f"${stats['hardware_rate_usd_per_hr']:.3f}/hr ({stats['sku']})", "n/a"],
+        ["This run cost", f"${oss['run_cost_usd']:.4f}  ({stats['hours_elapsed']*60:.1f} min)", f"${fr['run_cost_usd']:.4f}"],
+        [
+            "$ / 1M output tokens",
+            f"${oss['amortized_per_million_output_usd']:.2f} (amortized)",
+            f"${fr['amortized_per_million_output_usd']:.2f}",
+        ],
+    ]
+    tbl = Table(rows, colWidths=[2.0 * inch, 2.4 * inch, 2.2 * inch])
+    tbl.setStyle(
+        TableStyle(
+            [
+                ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#CBD5E1")),
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#F1F5F9")),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("FONTSIZE", (0, 0), (-1, -1), 8.5),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ]
+        )
+    )
+    elements: list = [tbl]
+    elements.append(Spacer(1, 4))
+    elements.append(
+        Paragraph(
+            f"<font size='8' color='#64748B'>{stats['pricing_note']}</font>",
+            styles["Italic"],
+        )
+    )
+    return elements
+
+
+def _write_cost_md(data: dict) -> None:
+    """Write a markdown sidecar of the cost & latency table for PR-readability."""
+    stats = _cost_latency_stats(data)
+    oss, fr = stats["oss"], stats["frontier"]
+    md = (
+        "# Eval — Cost & Latency\n\n"
+        f"OSS: `{stats['oss_label']}` on `{stats['sku']}` "
+        f"(${stats['hardware_rate_usd_per_hr']:.3f}/hr)\n\n"
+        f"Frontier: `{stats['frontier_label']}`\n\n"
+        f"Wall-clock for this run: **{stats['hours_elapsed']*60:.1f} min**\n\n"
+        "| Metric | OSS | Frontier |\n"
+        "|---|---|---|\n"
+        f"| Median latency | {oss['median_ms']:.0f} ms | {fr['median_ms']:.0f} ms |\n"
+        f"| p95 latency | {oss['p95_ms']:.0f} ms | {fr['p95_ms']:.0f} ms |\n"
+        f"| Total output tokens | {oss['total_output_tokens']:,} | {fr['total_output_tokens']:,} |\n"
+        f"| Effective throughput | {oss['throughput_tok_s']:.1f} tok/s | n/a (hosted) |\n"
+        f"| Hardware cost | ${stats['hardware_rate_usd_per_hr']:.3f}/hr | n/a |\n"
+        f"| This run cost | ${oss['run_cost_usd']:.4f} | ${fr['run_cost_usd']:.4f} |\n"
+        f"| $ / 1M output tokens (amortized for OSS) | ${oss['amortized_per_million_output_usd']:.2f} | ${fr['amortized_per_million_output_usd']:.2f} |\n\n"
+        f"_{stats['pricing_note']}_\n"
+    )
+    COST_MD_PATH.parent.mkdir(parents=True, exist_ok=True)
+    COST_MD_PATH.write_text(md)
 
 
 # ── page 3: static failures ──────────────────────────────────────────────
@@ -550,6 +698,8 @@ def main() -> None:
         elements += _agent_category_page(data, styles)
     doc.build(elements)
     print(f"wrote {OUTPUT_PATH}")
+    _write_cost_md(data)
+    print(f"wrote {COST_MD_PATH}")
 
 
 if __name__ == "__main__":

@@ -1,0 +1,99 @@
+name: Build and deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build & push images
+    runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ steps.meta.outputs.tag }}
+      registry: ${{ steps.meta.outputs.registry }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Resolve image tag + registry
+        id: meta
+        run: |
+          echo "tag=${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+          echo "registry=${{ secrets.ACR_LOGIN_SERVER }}" >> "$GITHUB_OUTPUT"
+
+      - name: Login to ACR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ secrets.ACR_LOGIN_SERVER }}
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
+
+      - name: Build & push API image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: services/api/Dockerfile
+          push: true
+          tags: |
+            ${{ secrets.ACR_LOGIN_SERVER }}/ollive-api:${{ steps.meta.outputs.tag }}
+            ${{ secrets.ACR_LOGIN_SERVER }}/ollive-api:latest
+          cache-from: type=registry,ref=${{ secrets.ACR_LOGIN_SERVER }}/ollive-api:buildcache
+          cache-to: type=registry,ref=${{ secrets.ACR_LOGIN_SERVER }}/ollive-api:buildcache,mode=max
+
+      - name: Build & push chatbot image
+        uses: docker/build-push-action@v6
+        with:
+          context: services/chatbot
+          file: services/chatbot/Dockerfile
+          push: true
+          build-args: |
+            NEXT_PUBLIC_API_URL=https://${{ secrets.PUBLIC_HOSTNAME }}/api
+          tags: |
+            ${{ secrets.ACR_LOGIN_SERVER }}/ollive-chatbot:${{ steps.meta.outputs.tag }}
+            ${{ secrets.ACR_LOGIN_SERVER }}/ollive-chatbot:latest
+          cache-from: type=registry,ref=${{ secrets.ACR_LOGIN_SERVER }}/ollive-chatbot:buildcache
+          cache-to: type=registry,ref=${{ secrets.ACR_LOGIN_SERVER }}/ollive-chatbot:buildcache,mode=max
+
+  deploy:
+    name: Deploy to VM
+    needs: build
+    runs-on: ubuntu-latest
+    if: ${{ vars.DEPLOY_HOST != '' || secrets.DEPLOY_HOST != '' }}
+    steps:
+      - name: Resolve deploy host
+        id: host
+        run: |
+          host="${{ secrets.DEPLOY_HOST }}"
+          if [ -z "$host" ]; then host="${{ vars.DEPLOY_HOST }}"; fi
+          echo "host=$host" >> "$GITHUB_OUTPUT"
+
+      - name: SSH into VM and roll out new images
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ steps.host.outputs.host }}
+          username: azureuser
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          script_stop: true
+          script: |
+            set -euo pipefail
+            cd /opt/ollive/repo
+            sudo git pull --ff-only origin main
+            sudo sed -i 's|^IMAGE_TAG=.*|IMAGE_TAG=${{ needs.build.outputs.image_tag }}|' .env
+            grep -q '^IMAGE_TAG=' .env || echo 'IMAGE_TAG=${{ needs.build.outputs.image_tag }}' | sudo tee -a .env >/dev/null
+            sudo docker compose \
+                -f docker-compose.yml \
+                -f infra/deploy/docker-compose.prod.yml \
+                -f infra/deploy/docker-compose.ci.yml \
+                pull
+            sudo docker compose \
+                -f docker-compose.yml \
+                -f infra/deploy/docker-compose.prod.yml \
+                -f infra/deploy/docker-compose.ci.yml \
+                up -d --remove-orphans
+            sudo docker image prune -f

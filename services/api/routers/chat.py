@@ -38,6 +38,7 @@ from sdk import (
 
 from services.api.db import postgres as pg
 from services.api.deps import llm_wrapper, pg_pool, tools_registry
+from services.api.guardrails import check_input, check_output, validate_tool_args
 from services.api.tools.registry import ToolRegistry, ToolUnknownError
 
 MAX_TOOL_HOPS = 5
@@ -223,6 +224,22 @@ async def chat_stream(
 
     async def event_generator() -> AsyncIterator[bytes]:
         cumulative_usage = {"input": 0, "output": 0, "cost_usd": 0.0}
+
+        input_check = check_input(body.message)
+        if not input_check.allowed:
+            refusal = "This request was blocked by guardrails."
+            yield _sse({
+                "type": "guardrail_block",
+                "stage": "input",
+                "reason": input_check.reason,
+            })
+            await pg.add_message(
+                pool, conv_id, role="assistant", content=refusal, token_count=0
+            )
+            yield _sse({"type": "done", "usage": cumulative_usage})
+            yield b"data: [DONE]\n\n"
+            return
+
         try:
             for hop in range(MAX_TOOL_HOPS):
                 hop_text = ""
@@ -266,6 +283,18 @@ async def chat_stream(
                 cumulative_usage["output"] += usage.output_tokens
                 cumulative_usage["cost_usd"] += usage.cost_usd(model)
 
+                output_blocked = False
+                if hop_text:
+                    out_check = check_output(hop_text)
+                    if not out_check.allowed:
+                        yield _sse({
+                            "type": "guardrail_block",
+                            "stage": "output",
+                            "reason": out_check.reason,
+                        })
+                        hop_text = "This response was blocked by guardrails."
+                        output_blocked = True
+
                 # Persist the assistant turn — both text content (if any) and
                 # the tool calls it issued. Even when hop_text is empty we
                 # still need a row so history replay can pair tool_calls with
@@ -275,7 +304,7 @@ async def chat_stream(
                         {"id": tc.id, "name": tc.name, "arguments": tc.arguments}
                         for tc in final_msg.tool_calls
                     ]
-                    if final_msg.tool_calls
+                    if final_msg.tool_calls and not output_blocked
                     else None
                 )
                 if hop_text or tool_calls_payload:
@@ -288,15 +317,35 @@ async def chat_stream(
                         tool_calls=tool_calls_payload,
                     )
 
-                # No tool calls → conversation turn is done.
-                if not final_msg.tool_calls:
+                # No tool calls (or output blocked) → conversation turn is done.
+                if not final_msg.tool_calls or output_blocked:
                     yield _sse({"type": "done", "usage": cumulative_usage})
                     return
 
-                # Execute every requested tool call in parallel.
+                # Validate tool args, then execute valid calls in parallel.
+                async def _run_one(tc: ToolCall) -> dict:
+                    val = validate_tool_args(tc.name, tc.arguments)
+                    if not val.allowed:
+                        return {
+                            "value": {"error": val.reason, "blocked": True},
+                            "is_error": True,
+                            "blocked": True,
+                        }
+                    res = await _safe_call(tools, tc.name, tc.arguments)
+                    return {**res, "blocked": False}
+
                 results = await asyncio.gather(
-                    *[_safe_call(tools, tc.name, tc.arguments) for tc in final_msg.tool_calls],
+                    *[_run_one(tc) for tc in final_msg.tool_calls],
                 )
+                for tc, result in zip(final_msg.tool_calls, results):
+                    if result.get("blocked"):
+                        yield _sse({
+                            "type": "guardrail_block",
+                            "stage": "tool_args",
+                            "tool_call_id": tc.id,
+                            "name": tc.name,
+                            "reason": result["value"].get("error"),
+                        })
 
                 tool_results: list[ToolResult] = []
                 for tc, result in zip(final_msg.tool_calls, results):
