@@ -142,7 +142,17 @@ def _rebuild_history(history: list[dict]) -> list:
             ]
             out.append(AssistantMessage(content=content_blocks, tool_calls=tool_calls))
 
-    flush_results()
+    # Orphaned tool results (persisted before the model's follow-up hop
+    # finished) must not be replayed: flushing them here would place a
+    # ToolResultMessage immediately before the new UserMessage, producing
+    # consecutive user-role messages that Anthropic rejects. Strip the
+    # unanswered tool_calls from the trailing assistant turn instead.
+    if pending_results:
+        pending_results = []
+        if out and isinstance(out[-1], AssistantMessage) and out[-1].tool_calls:
+            last = out[-1]
+            out[-1] = AssistantMessage(content=last.content, tool_calls=[])
+
     return out
 
 
