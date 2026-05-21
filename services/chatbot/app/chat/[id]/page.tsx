@@ -92,7 +92,7 @@ export default function ChatPage({ params }: PageProps) {
           message: text,
           provider,
           model,
-          thinking: thinking ? true : undefined,
+          thinking,
         },
         abortRef.current.signal,
       )) {

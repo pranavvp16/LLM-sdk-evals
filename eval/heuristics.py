@@ -79,13 +79,19 @@ _H1_RE = re.compile(r"(?m)^#\s+Summary\s*$")
 _H2_RE = re.compile(r"(?m)^##\s+Details\s*$")
 _H3_RE = re.compile(r"(?m)^###\s+Next step\s*$")
 
+# Word-boundary patterns so short tokens like "very" don't match inside
+# "every", "delivery", etc.
+_BANNED_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
+    (phrase, re.compile(rf"\b{re.escape(phrase)}\b", re.I))
+    for phrase in BANNED_PHRASES
+)
+
 
 def check_response(text: str) -> HeuristicResult:
     """Deterministic checks against the structured system prompt rules."""
     if text is None:
         text = ""
     stripped = text.strip()
-    lower = text.lower()
 
     h1 = _H1_RE.search(text) is not None
     h2 = _H2_RE.search(text) is not None
@@ -94,7 +100,7 @@ def check_response(text: str) -> HeuristicResult:
     last_line = stripped.splitlines()[-1].strip() if stripped else ""
     persona_signature = last_line == SIGNATURE
 
-    found = [p for p in BANNED_PHRASES if p in lower]
+    found = [phrase for phrase, pattern in _BANNED_PATTERNS if pattern.search(text)]
     length_ok = MIN_CHARS <= len(stripped) <= MAX_CHARS
 
     overall = (

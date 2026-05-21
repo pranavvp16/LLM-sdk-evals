@@ -59,6 +59,7 @@ class RunStatus:
 
 _LOCK = threading.Lock()
 _LATEST: Optional[RunStatus] = None
+_BG_TASK: Optional[asyncio.Task] = None
 
 
 def _set_latest(rs: RunStatus) -> None:
@@ -75,6 +76,34 @@ def _get_latest() -> Optional[RunStatus]:
 def _is_running() -> bool:
     rs = _get_latest()
     return rs is not None and rs.status == "running"
+
+
+def _track_background_task(task: asyncio.Task) -> None:
+    """Hold a strong reference so the eval task is not GC'd mid-run."""
+    global _BG_TASK
+    _BG_TASK = task
+
+    def _done(t: asyncio.Task) -> None:
+        global _BG_TASK
+        _BG_TASK = None
+        if t.cancelled():
+            return
+        exc = t.exception()
+        if exc is not None:
+            logger.exception("background eval task failed", exc_info=exc)
+
+    task.add_done_callback(_done)
+
+
+def _load_results_file() -> dict:
+    if not RESULTS_PATH.exists():
+        raise FileNotFoundError("results.json missing")
+    return json.loads(RESULTS_PATH.read_text())
+
+
+def _save_results_file(payload: dict) -> None:
+    RESULTS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    RESULTS_PATH.write_text(json.dumps(payload, indent=2, default=str))
 
 
 # ── Pydantic request/response models ─────────────────────────────────────
@@ -98,14 +127,14 @@ router = APIRouter(prefix="/eval", tags=["eval"])
 
 @router.get("/results")
 async def get_results() -> dict:
-    if not RESULTS_PATH.exists():
+    try:
+        return await asyncio.to_thread(_load_results_file)
+    except FileNotFoundError:
         raise HTTPException(
             status.HTTP_404_NOT_FOUND,
             "no results.json yet — run an eval via POST /eval/run or "
             "`python eval/run_eval.py`",
-        )
-    try:
-        return json.loads(RESULTS_PATH.read_text())
+        ) from None
     except json.JSONDecodeError as e:
         raise HTTPException(
             status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -180,7 +209,7 @@ async def start_run(body: RunRequest) -> RunAccepted:
     )
     _set_latest(rs)
 
-    asyncio.create_task(_run_in_background(rs))
+    _track_background_task(asyncio.create_task(_run_in_background(rs)))
 
     return RunAccepted(run_id=run_id, status=rs.status)
 
@@ -212,8 +241,7 @@ async def _run_in_background(rs: RunStatus) -> None:
             limit=rs.limit,
             on_progress=_on_progress,
         )
-        RESULTS_PATH.parent.mkdir(parents=True, exist_ok=True)
-        RESULTS_PATH.write_text(json.dumps(payload, indent=2, default=str))
+        await asyncio.to_thread(_save_results_file, payload)
         try:
             # Regenerate the PDF too — best effort.
             from eval import report as report_module

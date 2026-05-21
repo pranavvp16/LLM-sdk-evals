@@ -71,7 +71,7 @@ async def _call_static(
     system_prompt: str,
     user_prompt: str,
     max_tokens: int,
-    thinking: bool | int | None = True,
+    thinking: bool | int | None = None,
 ) -> dict[str, Any]:
     model = get_model(provider, model_name)
     ctx = Context(
@@ -126,10 +126,16 @@ async def _evaluate_static(
     system_prompt: str,
 ) -> dict[str, Any]:
     oss_task = _call_static(
-        wrapper, oss_provider, oss_model, system_prompt, prompt["prompt"], 512
+        wrapper, oss_provider, oss_model, system_prompt, prompt["prompt"], 512, thinking=None
     )
     frontier_task = _call_static(
-        wrapper, FRONTIER_PROVIDER, FRONTIER_MODEL, system_prompt, prompt["prompt"], 1024
+        wrapper,
+        FRONTIER_PROVIDER,
+        FRONTIER_MODEL,
+        system_prompt,
+        prompt["prompt"],
+        1024,
+        thinking=True,
     )
     oss_out, frontier_out = await asyncio.gather(oss_task, frontier_task)
 
@@ -282,7 +288,7 @@ async def run_agent(
 ) -> list[dict]:
     oss_model_def = get_model(oss_provider, oss_model)
     if not oss_model_def.supports_tools:
-        raise SystemExit(
+        raise ValueError(
             f"agent eval requires supports_tools=True; "
             f"{oss_provider}/{oss_model} has it disabled. "
             f"Set OSS_PROVIDER=opencode-go (or another tool-capable provider)."

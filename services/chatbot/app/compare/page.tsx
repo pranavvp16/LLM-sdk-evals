@@ -133,7 +133,7 @@ function LiveCompare() {
           message: text,
           provider: pick.provider,
           model: pick.model,
-          thinking: thinking ? true : undefined,
+          thinking,
         },
         signal,
       )) {
