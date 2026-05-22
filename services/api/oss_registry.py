@@ -90,6 +90,20 @@ def register_oss_models() -> None:
             supports_tools=True,
         )
     )
+    # Llama Guard 3 1B — safety classifier (input + output) hosted on the
+    # same Ollama endpoint. Not a chat model: `supports_tools=False`. Used
+    # by services/api/guardrails/llamaguard.py and by the 3-column eval.
+    register_model(
+        ModelDef(
+            id="llama-guard3:1b",
+            provider="ollama",
+            api=ApiProtocol.OPENAI_COMPLETIONS,
+            context_window=8_192,
+            max_tokens=64,
+            cost=ModelCost(),
+            supports_tools=False,
+        )
+    )
     # gemini-2.5-flash — the previously-registered gemini-2.0-flash has
     # 0 free-tier quota on the deployment key; 2.5-flash still serves.
     register_model(
