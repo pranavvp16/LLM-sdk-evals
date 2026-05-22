@@ -53,6 +53,9 @@ export const StaticRowSchema = z.object({
   kind: z.literal("static"),
   oss: StaticSideSchema,
   frontier: StaticSideSchema,
+  // Present when the eval ran with the 3-column Llama Guard ablation
+  // (run_eval.py sets metadata.guardrails_ablation=true).
+  oss_guarded: StaticSideSchema.optional(),
 });
 export type StaticRow = z.infer<typeof StaticRowSchema>;
 
@@ -110,6 +113,8 @@ export const AgentRowSchema = z.object({
   kind: z.literal("agent"),
   oss: TrajectorySchema,
   frontier: TrajectorySchema,
+  // Present when the eval ran with the 3-column Llama Guard ablation.
+  oss_guarded: TrajectorySchema.optional(),
 });
 export type AgentRow = z.infer<typeof AgentRowSchema>;
 
@@ -128,6 +133,9 @@ export const MetadataSchema = z.object({
   static_prompts_total: z.number().int(),
   agent_prompts_total: z.number().int(),
   system_prompt_hash: z.string(),
+  // Optional — set when the 3-column Llama Guard ablation ran.
+  guardrails_ablation: z.boolean().optional(),
+  guard_model: z.string().nullable().optional(),
 });
 export type Metadata = z.infer<typeof MetadataSchema>;
 

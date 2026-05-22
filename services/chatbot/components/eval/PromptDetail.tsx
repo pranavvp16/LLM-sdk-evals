@@ -61,25 +61,38 @@ export function PromptDetail({ row }: { row: EvalRow }) {
         </details>
       </header>
 
-      <div className="grid flex-1 grid-cols-1 divide-y divide-neutral-200 overflow-auto lg:grid-cols-2 lg:divide-x lg:divide-y-0">
+      <div
+        className={`grid flex-1 grid-cols-1 divide-y divide-neutral-200 overflow-auto lg:divide-x lg:divide-y-0 ${
+          row.oss_guarded ? "lg:grid-cols-3" : "lg:grid-cols-2"
+        }`}
+      >
         <SidePanel row={row} side="oss" />
+        {row.oss_guarded && <SidePanel row={row} side="oss_guarded" />}
         <SidePanel row={row} side="frontier" />
       </div>
     </section>
   );
 }
 
-function SidePanel({ row, side }: { row: EvalRow; side: "oss" | "frontier" }) {
-  const data = row[side];
+type SideKey = "oss" | "oss_guarded" | "frontier";
+
+const SIDE_LABEL: Record<SideKey, string> = {
+  oss: "OSS",
+  oss_guarded: "OSS + Llama Guard",
+  frontier: "Frontier",
+};
+
+function SidePanel({ row, side }: { row: EvalRow; side: SideKey }) {
+  const data = side === "oss_guarded" ? row.oss_guarded : row[side];
+  if (!data) return null;
   const isAgent = row.kind === "agent";
-  const provider = isAgent ? (data as Trajectory).provider : side === "oss" ? "OSS" : "Frontier";
   const model = isAgent ? (data as Trajectory).model : "";
   return (
     <div className="flex flex-col overflow-auto">
       <header className="sticky top-0 z-10 border-b border-neutral-200 bg-white px-4 py-2">
         <div className="flex items-center justify-between">
           <span className="text-xs font-medium uppercase tracking-wide text-neutral-500">
-            {side === "oss" ? "OSS" : "Frontier"}
+            {SIDE_LABEL[side]}
             {model && <span className="ml-2 font-mono text-[10px] text-neutral-400">{model}</span>}
           </span>
           <span className="text-[11px] text-neutral-400">
