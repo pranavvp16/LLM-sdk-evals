@@ -38,8 +38,8 @@ const AGENT_AXES: { key: keyof AgentScores; label: string }[] = [
 export function PromptDetail({ row }: { row: EvalRow }) {
   return (
     <section className="flex h-full flex-col overflow-hidden">
-      <header className="border-b border-neutral-200 px-5 py-4">
-        <div className="flex items-center gap-2 text-xs text-neutral-500">
+      <header className="border-b border-neutral-200 px-4 py-4 sm:px-5">
+        <div className="flex flex-wrap items-center gap-2 text-xs text-neutral-500">
           <CategoryBadge category={row.category} />
           <span className="font-mono">{row.prompt_id}</span>
           <span>·</span>
@@ -61,7 +61,7 @@ export function PromptDetail({ row }: { row: EvalRow }) {
         </details>
       </header>
 
-      <div className="grid flex-1 grid-cols-2 divide-x divide-neutral-200 overflow-hidden">
+      <div className="grid flex-1 grid-cols-1 divide-y divide-neutral-200 overflow-auto lg:grid-cols-2 lg:divide-x lg:divide-y-0">
         <SidePanel row={row} side="oss" />
         <SidePanel row={row} side="frontier" />
       </div>
@@ -172,7 +172,7 @@ function ThinkingBlock({ text }: { text: string }) {
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
-        className="flex w-full items-center gap-2 px-2 py-1 hover:bg-amber-100"
+        className="flex min-h-[44px] w-full items-center gap-2 px-2 py-1 hover:bg-amber-100"
       >
         <span className="text-amber-600">{open ? "▾" : "▸"}</span>
         <span className="font-mono text-[10px] uppercase tracking-wide text-amber-700">

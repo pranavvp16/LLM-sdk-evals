@@ -54,12 +54,12 @@ export default function HomePage() {
   }
 
   return (
-    <main className="mx-auto max-w-3xl p-6">
-      <header className="mb-6 flex items-center justify-between">
+    <main className="mx-auto max-w-3xl p-4 sm:p-6">
+      <header className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <h1 className="text-2xl font-semibold">Ollive Chat</h1>
-        <div className="flex items-center gap-2">
+        <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
           <select
-            className="rounded border px-2 py-1.5 text-sm"
+            className="w-full rounded border px-2 py-1.5 text-sm sm:w-auto"
             value={`${picker.provider}/${picker.model}`}
             onChange={(e) => {
               const found = PROVIDERS.find(
@@ -76,7 +76,7 @@ export default function HomePage() {
           </select>
           <Link
             href={`/chat/new?provider=${picker.provider}&model=${picker.model}`}
-            className="rounded bg-black px-3 py-1.5 text-sm font-medium text-white hover:bg-neutral-800"
+            className="min-h-[44px] rounded bg-black px-3 py-1.5 text-center text-sm font-medium text-white hover:bg-neutral-800 sm:w-auto"
           >
             New conversation
           </Link>
@@ -103,9 +103,9 @@ export default function HomePage() {
           {conversations.map((c) => (
             <li
               key={c.id}
-              className="flex items-center justify-between rounded border p-3 hover:bg-neutral-50"
+              className="flex flex-col gap-2 rounded border p-3 hover:bg-neutral-50 sm:flex-row sm:items-center sm:justify-between"
             >
-              <Link href={`/chat/${c.id}`} className="flex-1">
+              <Link href={`/chat/${c.id}`} className="min-w-0 flex-1">
                 <div className="text-sm font-medium">{c.title || "(untitled)"}</div>
                 <div className="text-xs text-neutral-500">
                   {c.provider} / {c.model} ·{" "}
@@ -125,14 +125,14 @@ export default function HomePage() {
               </Link>
               {c.status === "cancelled" ? (
                 <button
-                  className="ml-2 text-xs text-blue-600 hover:underline"
+                  className="min-h-[44px] shrink-0 self-start text-xs text-blue-600 hover:underline sm:ml-2 sm:min-h-0"
                   onClick={() => onResume(c.id)}
                 >
                   Resume
                 </button>
               ) : (
                 <button
-                  className="ml-2 text-xs text-red-600 hover:underline"
+                  className="min-h-[44px] shrink-0 self-start text-xs text-red-600 hover:underline sm:ml-2 sm:min-h-0"
                   onClick={() => onCancel(c.id)}
                 >
                   Cancel
