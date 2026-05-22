@@ -3,9 +3,8 @@
 Multi-provider LLM chatbot + inference logging pipeline. Submission for the
 Ollive AI assignment (`work@ollive.ai`).
 
-A single `docker compose up` brings up the core stack: chatbot UI, FastAPI
+A single `docker compose up` brings up the full stack: chatbot UI, FastAPI
 backend, ingestion worker, Postgres, ClickHouse, Redis, Prometheus, and Grafana.
-(MinIO object storage is wired in Task 6 — see service table below.)
 
 > **Authoritative spec:** [`CLAUDE.md`](./CLAUDE.md) — full architecture
 > diagram, schema decisions, tool-calling design, and the eval rubric.
@@ -45,8 +44,6 @@ everything is ready.
 | Postgres       | `localhost:5432`                       | `ollive / ollive / ollive`         |
 | ClickHouse     | http://localhost:8123                  | HTTP interface                     |
 | Redis          | `localhost:6379`                       |                                    |
-| MinIO API      | http://localhost:9000                  | Task 6 — S3-compatible object storage |
-| MinIO console  | http://localhost:9001                  | Task 6 — web UI (`minioadmin` / preset) |
 
 ### Shut down
 
@@ -115,19 +112,39 @@ keep passing.
 
 ## 5. Running the evaluation (Part A deliverable)
 
-The eval compares **Qwen2.5-0.5B (HuggingFace Inference API)** against
-**Claude Sonnet 4** on 30 prompts across hallucination / bias / safety, judged
-by Sonnet, and emits a **3-page PDF** (Summary, Breakdown, Notable Failures).
+The eval pits an **OSS model** (DeepSeek-V4-Flash via OpenCode Go by default,
+or vLLM-hosted Qwen / HF Inference) against **Claude Sonnet 4.6** across three
+layers — judged by Sonnet:
+
+- **L1 heuristic** — deterministic checks against the shared system prompt
+  (persona signature, required headers, banned phrases, length bounds).
+- **L2 LLM-as-judge static** — 30 plain-text prompts (10 factual / 10
+  adversarial / 10 bias) scored 0–5 on hallucination, bias, safety.
+- **L3 LLM-as-judge agent** — 20 tool-use prompts, 5-axis trajectory scoring
+  (tool selection, arg correctness, task completion, output grounding, tool
+  safety).
+
+Output: `eval/results.json` + an 8-page `docs/eval_report.pdf` covering
+static summary / methodology / per-category cards / static failures + agent
+summary / methodology / per-category cards / agent walkthrough + worst
+trajectories. Browse interactively at
+[`http://localhost:3000/compare?view=benchmark`](http://localhost:3000/compare?view=benchmark).
 
 ```bash
-# requires ANTHROPIC_API_KEY and HUGGINGFACE_API_KEY
-python eval/run_eval.py     # → eval/results.json
-python eval/report.py       # → docs/eval_report.pdf
+# Both layers (default). Needs ANTHROPIC_API_KEY plus an OSS backend (OPENCODE_API_KEY
+# for L3 tool-use, or HUGGINGFACE_API_KEY for static-only).
+python eval/run_eval.py
+
+python eval/run_eval.py --static            # just the 30 static prompts
+python eval/run_eval.py --agent             # just the 20 agent trajectories
+python eval/run_eval.py --all --limit 3     # smoke test
+python eval/report.py                       # regenerate PDF from results.json
 ```
 
-Set `VLLM_BASE_URL` + `VLLM_API_KEY` when self-hosting Qwen via vLLM for chat
-or `/compare`. CLI eval defaults to HuggingFace; set `OSS_PROVIDER=vllm` (or
-`opencode` / `opencode-go`) to switch the OSS side in `eval/run_eval.py`.
+The OSS backend is selected by `Settings.resolve_oss()` (see CLAUDE.md §5):
+explicit `OSS_PROVIDER` → `opencode-go` if `OPENCODE_API_KEY` is set →
+`huggingface` if only `HUGGINGFACE_API_KEY` is set. `huggingface` is
+static-only (no tool support); the L3 agent eval needs `opencode-go` or vLLM.
 
 ---
 
@@ -154,8 +171,8 @@ or `/compare`. CLI eval defaults to HuggingFace; set `OSS_PROVIDER=vllm` (or
               Grafana (latency / throughput / errors)
 ```
 
-The full diagram, schema definitions, and the design rationale for each
-piece live in [`CLAUDE.md`](./CLAUDE.md) §2-§3 and §7.
+The full diagram (ASCII), schema definitions, and design rationale live in
+[`CLAUDE.md`](./CLAUDE.md) §2 and §7.
 
 ---
 
