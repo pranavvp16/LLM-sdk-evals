@@ -4,20 +4,164 @@
   "tags": ["ollive"],
   "timezone": "browser",
   "schemaVersion": 39,
-  "version": 1,
+  "version": 2,
   "refresh": "30s",
-  "time": { "from": "now-1h", "to": "now" },
+  "time": { "from": "now-6h", "to": "now" },
   "panels": [
     {
       "id": 1,
-      "type": "timeseries",
-      "title": "p50 / p95 / p99 latency by provider",
-      "gridPos": { "x": 0, "y": 0, "w": 24, "h": 10 },
+      "type": "stat",
+      "title": "Total calls",
+      "gridPos": { "x": 0, "y": 0, "w": 6, "h": 3 },
       "datasource": { "type": "grafana-clickhouse-datasource", "uid": "ClickHouse" },
+      "fieldConfig": {
+        "defaults": { "unit": "short", "color": { "mode": "fixed", "fixedColor": "blue" } },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "value_and_name",
+        "colorMode": "value",
+        "graphMode": "area"
+      },
       "targets": [
         {
           "refId": "A",
-          "rawSql": "SELECT toStartOfMinute(started_at) AS t, provider, quantile(0.5)(latency_ms) AS p50, quantile(0.95)(latency_ms) AS p95, quantile(0.99)(latency_ms) AS p99 FROM inference_logs WHERE $__timeFilter(started_at) GROUP BY t, provider ORDER BY t"
+          "rawSql": "SELECT count() AS calls FROM inference_logs WHERE $__timeFilter(started_at)"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "p50 latency",
+      "gridPos": { "x": 6, "y": 0, "w": 6, "h": 3 },
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "ClickHouse" },
+      "fieldConfig": {
+        "defaults": { "unit": "ms", "color": { "mode": "fixed", "fixedColor": "green" } },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "value_and_name",
+        "colorMode": "value",
+        "graphMode": "area"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "rawSql": "SELECT quantile(0.5)(latency_ms) AS p50_ms FROM inference_logs WHERE $__timeFilter(started_at)"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "p95 latency",
+      "gridPos": { "x": 12, "y": 0, "w": 6, "h": 3 },
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "ClickHouse" },
+      "fieldConfig": {
+        "defaults": { "unit": "ms", "color": { "mode": "fixed", "fixedColor": "orange" } },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "value_and_name",
+        "colorMode": "value",
+        "graphMode": "area"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "rawSql": "SELECT quantile(0.95)(latency_ms) AS p95_ms FROM inference_logs WHERE $__timeFilter(started_at)"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "p99 latency",
+      "gridPos": { "x": 18, "y": 0, "w": 6, "h": 3 },
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "ClickHouse" },
+      "fieldConfig": {
+        "defaults": { "unit": "ms", "color": { "mode": "fixed", "fixedColor": "red" } },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "value_and_name",
+        "colorMode": "value",
+        "graphMode": "area"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "rawSql": "SELECT quantile(0.99)(latency_ms) AS p99_ms FROM inference_logs WHERE $__timeFilter(started_at)"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "p50 / p95 / p99 latency by provider",
+      "gridPos": { "x": 0, "y": 3, "w": 24, "h": 9 },
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "ClickHouse" },
+      "fieldConfig": { "defaults": { "unit": "ms" }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["mean", "max"] } },
+      "targets": [
+        {
+          "refId": "A",
+          "rawSql": "SELECT toStartOfInterval(started_at, INTERVAL 1 MINUTE) AS t, provider, quantile(0.5)(latency_ms) AS p50, quantile(0.95)(latency_ms) AS p95, quantile(0.99)(latency_ms) AS p99 FROM inference_logs WHERE $__timeFilter(started_at) GROUP BY t, provider ORDER BY t"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "bargauge",
+      "title": "p95 latency by model",
+      "gridPos": { "x": 0, "y": 12, "w": 12, "h": 8 },
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "ClickHouse" },
+      "fieldConfig": { "defaults": { "unit": "ms", "color": { "mode": "continuous-GrYlRd" } }, "overrides": [] },
+      "options": {
+        "orientation": "horizontal",
+        "displayMode": "gradient",
+        "valueMode": "color",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "rawSql": "SELECT concat(provider, ' / ', model) AS model, quantile(0.95)(latency_ms) AS p95 FROM inference_logs WHERE $__timeFilter(started_at) GROUP BY provider, model ORDER BY p95 DESC"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Median latency by model",
+      "gridPos": { "x": 12, "y": 12, "w": 12, "h": 8 },
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "ClickHouse" },
+      "fieldConfig": { "defaults": { "unit": "ms" }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean"] } },
+      "targets": [
+        {
+          "refId": "A",
+          "rawSql": "SELECT toStartOfInterval(started_at, INTERVAL 1 MINUTE) AS t, concat(provider, '/', model) AS model, quantile(0.5)(latency_ms) AS p50 FROM inference_logs WHERE $__timeFilter(started_at) GROUP BY t, provider, model ORDER BY t"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "histogram",
+      "title": "Latency distribution (all providers)",
+      "gridPos": { "x": 0, "y": 20, "w": 24, "h": 8 },
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "ClickHouse" },
+      "fieldConfig": { "defaults": { "unit": "ms" }, "overrides": [] },
+      "options": { "bucketSize": 500, "combine": false },
+      "targets": [
+        {
+          "refId": "A",
+          "rawSql": "SELECT latency_ms FROM inference_logs WHERE $__timeFilter(started_at) AND latency_ms > 0"
         }
       ]
     }

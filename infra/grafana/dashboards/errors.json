@@ -1,36 +1,189 @@
 {
   "uid": "errors",
-  "title": "Inference errors",
+  "title": "Inference errors & stop reasons",
   "tags": ["ollive"],
   "timezone": "browser",
   "schemaVersion": 39,
-  "version": 1,
+  "version": 2,
   "refresh": "30s",
   "time": { "from": "now-6h", "to": "now" },
   "panels": [
     {
       "id": 1,
-      "type": "timeseries",
-      "title": "Error rate by provider",
-      "gridPos": { "x": 0, "y": 0, "w": 24, "h": 8 },
+      "type": "stat",
+      "title": "Total errors",
+      "gridPos": { "x": 0, "y": 0, "w": 6, "h": 3 },
       "datasource": { "type": "grafana-clickhouse-datasource", "uid": "ClickHouse" },
+      "fieldConfig": {
+        "defaults": { "unit": "short", "color": { "mode": "fixed", "fixedColor": "red" } },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "value_and_name",
+        "colorMode": "value",
+        "graphMode": "area"
+      },
       "targets": [
         {
           "refId": "A",
-          "rawSql": "SELECT toStartOfMinute(started_at) AS t, provider, sum(status = 'error') / count() AS error_rate FROM inference_logs WHERE $__timeFilter(started_at) GROUP BY t, provider ORDER BY t"
+          "rawSql": "SELECT countIf(status = 'error') AS errors FROM inference_logs WHERE $__timeFilter(started_at)"
         }
       ]
     },
     {
       "id": 2,
-      "type": "table",
-      "title": "Recent errors",
-      "gridPos": { "x": 0, "y": 8, "w": 24, "h": 10 },
+      "type": "stat",
+      "title": "Error rate",
+      "gridPos": { "x": 6, "y": 0, "w": 6, "h": 3 },
       "datasource": { "type": "grafana-clickhouse-datasource", "uid": "ClickHouse" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 2,
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 0.01 },
+              { "color": "red", "value": 0.05 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "value_and_name",
+        "colorMode": "background",
+        "graphMode": "none"
+      },
       "targets": [
         {
           "refId": "A",
-          "rawSql": "SELECT started_at, provider, model, error_message FROM inference_logs WHERE status = 'error' AND $__timeFilter(started_at) ORDER BY started_at DESC LIMIT 50"
+          "rawSql": "SELECT countIf(status = 'error') / greatest(count(),1) AS rate FROM inference_logs WHERE $__timeFilter(started_at)"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Successful calls",
+      "gridPos": { "x": 12, "y": 0, "w": 6, "h": 3 },
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "ClickHouse" },
+      "fieldConfig": {
+        "defaults": { "unit": "short", "color": { "mode": "fixed", "fixedColor": "green" } },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "value_and_name",
+        "colorMode": "value",
+        "graphMode": "area"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "rawSql": "SELECT countIf(status = 'success') AS ok FROM inference_logs WHERE $__timeFilter(started_at)"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Last error",
+      "gridPos": { "x": 18, "y": 0, "w": 6, "h": 3 },
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "ClickHouse" },
+      "fieldConfig": {
+        "defaults": { "unit": "dateTimeAsIso", "color": { "mode": "fixed", "fixedColor": "red" } },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "value_and_name",
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "rawSql": "SELECT max(started_at) AS last_error FROM inference_logs WHERE status = 'error' AND $__timeFilter(started_at)"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Error rate by provider",
+      "gridPos": { "x": 0, "y": 3, "w": 24, "h": 8 },
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "ClickHouse" },
+      "fieldConfig": { "defaults": { "unit": "percentunit", "decimals": 2 }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["mean", "max"] } },
+      "targets": [
+        {
+          "refId": "A",
+          "rawSql": "SELECT toStartOfInterval(started_at, INTERVAL 1 MINUTE) AS t, provider, countIf(status = 'error') / greatest(count(),1) AS error_rate FROM inference_logs WHERE $__timeFilter(started_at) GROUP BY t, provider ORDER BY t"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "piechart",
+      "title": "Stop reason distribution",
+      "gridPos": { "x": 0, "y": 11, "w": 12, "h": 8 },
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "ClickHouse" },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "options": {
+        "pieType": "donut",
+        "displayLabels": ["name", "percent"],
+        "legend": { "displayMode": "table", "placement": "right", "values": ["value", "percent"] }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "rawSql": "SELECT stop_reason, count() AS n FROM inference_logs WHERE $__timeFilter(started_at) GROUP BY stop_reason ORDER BY n DESC"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "bargauge",
+      "title": "Calls by provider × model",
+      "gridPos": { "x": 12, "y": 11, "w": 12, "h": 8 },
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "ClickHouse" },
+      "fieldConfig": { "defaults": { "unit": "short", "color": { "mode": "continuous-BlPu" } }, "overrides": [] },
+      "options": {
+        "orientation": "horizontal",
+        "displayMode": "gradient",
+        "valueMode": "color",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "rawSql": "SELECT concat(provider, ' / ', model) AS pm, count() AS n FROM inference_logs WHERE $__timeFilter(started_at) GROUP BY provider, model ORDER BY n DESC"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "table",
+      "title": "Recent errors",
+      "gridPos": { "x": 0, "y": 19, "w": 24, "h": 10 },
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "ClickHouse" },
+      "fieldConfig": {
+        "defaults": { "custom": { "align": "auto" } },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "latency_ms" }, "properties": [{ "id": "unit", "value": "ms" }] },
+          { "matcher": { "id": "byName", "options": "error_message" }, "properties": [{ "id": "custom.width", "value": 480 }] }
+        ]
+      },
+      "options": { "showHeader": true },
+      "targets": [
+        {
+          "refId": "A",
+          "rawSql": "SELECT started_at, provider, model, latency_ms, conversation_id, error_message FROM inference_logs WHERE status = 'error' AND $__timeFilter(started_at) ORDER BY started_at DESC LIMIT 50"
         }
       ]
     }

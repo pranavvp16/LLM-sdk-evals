@@ -1,36 +1,185 @@
 {
   "uid": "throughput",
-  "title": "Inference throughput",
+  "title": "Inference throughput & cost",
   "tags": ["ollive"],
   "timezone": "browser",
   "schemaVersion": 39,
-  "version": 1,
+  "version": 2,
   "refresh": "30s",
-  "time": { "from": "now-1h", "to": "now" },
+  "time": { "from": "now-6h", "to": "now" },
   "panels": [
     {
       "id": 1,
-      "type": "timeseries",
-      "title": "Requests per minute",
-      "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
+      "type": "stat",
+      "title": "Total requests",
+      "gridPos": { "x": 0, "y": 0, "w": 6, "h": 3 },
       "datasource": { "type": "grafana-clickhouse-datasource", "uid": "ClickHouse" },
+      "fieldConfig": {
+        "defaults": { "unit": "short", "color": { "mode": "fixed", "fixedColor": "blue" } },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "value_and_name",
+        "colorMode": "value",
+        "graphMode": "area"
+      },
       "targets": [
         {
           "refId": "A",
-          "rawSql": "SELECT toStartOfMinute(started_at) AS t, provider, count() AS rpm FROM inference_logs WHERE $__timeFilter(started_at) GROUP BY t, provider ORDER BY t"
+          "rawSql": "SELECT count() AS requests FROM inference_logs WHERE $__timeFilter(started_at)"
         }
       ]
     },
     {
       "id": 2,
-      "type": "timeseries",
-      "title": "Tokens per second",
-      "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 },
+      "type": "stat",
+      "title": "Output tokens",
+      "gridPos": { "x": 6, "y": 0, "w": 6, "h": 3 },
       "datasource": { "type": "grafana-clickhouse-datasource", "uid": "ClickHouse" },
+      "fieldConfig": {
+        "defaults": { "unit": "short", "color": { "mode": "fixed", "fixedColor": "green" } },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "value_and_name",
+        "colorMode": "value",
+        "graphMode": "area"
+      },
       "targets": [
         {
           "refId": "A",
-          "rawSql": "SELECT toStartOfMinute(started_at) AS t, provider, sum(output_tokens) / 60 AS tps FROM inference_logs WHERE $__timeFilter(started_at) GROUP BY t, provider ORDER BY t"
+          "rawSql": "SELECT sum(output_tokens) AS out_tokens FROM inference_logs WHERE $__timeFilter(started_at)"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Input tokens",
+      "gridPos": { "x": 12, "y": 0, "w": 6, "h": 3 },
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "ClickHouse" },
+      "fieldConfig": {
+        "defaults": { "unit": "short", "color": { "mode": "fixed", "fixedColor": "purple" } },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "value_and_name",
+        "colorMode": "value",
+        "graphMode": "area"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "rawSql": "SELECT sum(input_tokens) AS in_tokens FROM inference_logs WHERE $__timeFilter(started_at)"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Total cost",
+      "gridPos": { "x": 18, "y": 0, "w": 6, "h": 3 },
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "ClickHouse" },
+      "fieldConfig": {
+        "defaults": { "unit": "currencyUSD", "decimals": 4, "color": { "mode": "fixed", "fixedColor": "orange" } },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "value_and_name",
+        "colorMode": "value",
+        "graphMode": "area"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "rawSql": "SELECT sum(cost_usd) AS cost FROM inference_logs WHERE $__timeFilter(started_at)"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Requests per minute (by provider)",
+      "gridPos": { "x": 0, "y": 3, "w": 12, "h": 8 },
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "ClickHouse" },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["sum"] } },
+      "targets": [
+        {
+          "refId": "A",
+          "rawSql": "SELECT toStartOfInterval(started_at, INTERVAL 1 MINUTE) AS t, provider, count() AS rpm FROM inference_logs WHERE $__timeFilter(started_at) GROUP BY t, provider ORDER BY t"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Output tokens / minute (by provider)",
+      "gridPos": { "x": 12, "y": 3, "w": 12, "h": 8 },
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "ClickHouse" },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["sum"] } },
+      "targets": [
+        {
+          "refId": "A",
+          "rawSql": "SELECT toStartOfInterval(started_at, INTERVAL 1 MINUTE) AS t, provider, sum(output_tokens) AS out_tpm FROM inference_logs WHERE $__timeFilter(started_at) GROUP BY t, provider ORDER BY t"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Input tokens / minute (by provider)",
+      "gridPos": { "x": 0, "y": 11, "w": 12, "h": 8 },
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "ClickHouse" },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["sum"] } },
+      "targets": [
+        {
+          "refId": "A",
+          "rawSql": "SELECT toStartOfInterval(started_at, INTERVAL 1 MINUTE) AS t, provider, sum(input_tokens) AS in_tpm FROM inference_logs WHERE $__timeFilter(started_at) GROUP BY t, provider ORDER BY t"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Cumulative cost over time (by provider)",
+      "gridPos": { "x": 12, "y": 11, "w": 12, "h": 8 },
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "ClickHouse" },
+      "fieldConfig": { "defaults": { "unit": "currencyUSD", "decimals": 4 }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["max"] } },
+      "targets": [
+        {
+          "refId": "A",
+          "rawSql": "SELECT t, provider, sum(c) OVER (PARTITION BY provider ORDER BY t) AS cum_cost FROM (SELECT toStartOfInterval(started_at, INTERVAL 1 MINUTE) AS t, provider, sum(cost_usd) AS c FROM inference_logs WHERE $__timeFilter(started_at) GROUP BY t, provider) ORDER BY t"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "type": "table",
+      "title": "Provider × model summary",
+      "gridPos": { "x": 0, "y": 19, "w": 24, "h": 8 },
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "ClickHouse" },
+      "fieldConfig": {
+        "defaults": { "custom": { "align": "auto" } },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "avg_ms" }, "properties": [{ "id": "unit", "value": "ms" }] },
+          { "matcher": { "id": "byName", "options": "p95_ms" }, "properties": [{ "id": "unit", "value": "ms" }] },
+          { "matcher": { "id": "byName", "options": "cost_usd" }, "properties": [{ "id": "unit", "value": "currencyUSD" }, { "id": "decimals", "value": 4 }] },
+          { "matcher": { "id": "byName", "options": "cost_per_1k_out" }, "properties": [{ "id": "unit", "value": "currencyUSD" }, { "id": "decimals", "value": 5 }] }
+        ]
+      },
+      "options": { "showHeader": true },
+      "targets": [
+        {
+          "refId": "A",
+          "rawSql": "SELECT provider, model, count() AS calls, round(avg(latency_ms),0) AS avg_ms, round(quantile(0.95)(latency_ms),0) AS p95_ms, sum(input_tokens) AS in_tok, sum(output_tokens) AS out_tok, sum(cache_read_tokens) AS cache_read, round(sum(cost_usd),4) AS cost_usd, round(sum(cost_usd) / greatest(sum(output_tokens),1) * 1000, 5) AS cost_per_1k_out FROM inference_logs WHERE $__timeFilter(started_at) GROUP BY provider, model ORDER BY calls DESC"
         }
       ]
     }
