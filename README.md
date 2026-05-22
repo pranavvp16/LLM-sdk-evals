@@ -124,10 +124,11 @@ layers — judged by Sonnet:
   (tool selection, arg correctness, task completion, output grounding, tool
   safety).
 
-Output: `eval/results.json` + an 8-page `docs/eval_report.pdf` covering
-static summary / methodology / per-category cards / static failures + agent
-summary / methodology / per-category cards / agent walkthrough + worst
-trajectories. Browse interactively at
+Output: `eval/results.json` + a 9-page `docs/eval_report.pdf` (when both
+static and agent sections are present): summary, static methodology /
+per-category / failures, then agent methodology / summary / per-category /
+walkthrough / worst trajectories. Also writes `docs/eval_cost_latency.md`.
+Browse interactively at
 [`http://localhost:3000/compare?view=benchmark`](http://localhost:3000/compare?view=benchmark).
 
 ```bash
@@ -186,7 +187,7 @@ eval/                 LLM-as-judge runner + PDF report
 infra/                Prometheus + Grafana provisioning
 scripts/              run_migrations.py, seed_db.py
 tests/                pytest-asyncio
-docs/                 Architecture diagram, eval report PDF
+docs/                 Eval report PDF + cost/latency markdown
 ```
 
 ---
