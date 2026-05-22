@@ -70,7 +70,12 @@ def validate_tool_args(name: str, args: dict) -> GuardrailResult:
 
     duration = args.get("duration_min")
     if duration is not None:
-        if not isinstance(duration, int) or duration < 5 or duration > 240:
+        # Gemini returns whole numbers as floats (30.0) — accept those.
+        if isinstance(duration, float) and duration.is_integer():
+            duration = int(duration)
+            args["duration_min"] = duration
+        if not isinstance(duration, int) or isinstance(duration, bool) \
+                or duration < 5 or duration > 240:
             return GuardrailResult.block(
                 f"{name}: 'duration_min' must be an int in [5, 240]"
             )

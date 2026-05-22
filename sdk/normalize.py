@@ -227,8 +227,10 @@ def to_google_messages(ctx: Context) -> tuple[str, list[dict]]:
                 if isinstance(block, TextContent) and block.text:
                     parts.append({"text": block.text})
             for tc in msg.tool_calls:
+                # google-generativeai's dict-form Part parser requires snake_case
+                # proto field names (function_call, not functionCall).
                 parts.append({
-                    "functionCall": {"name": tc.name, "args": tc.arguments}
+                    "function_call": {"name": tc.name, "args": tc.arguments}
                 })
             contents.append({"role": "model", "parts": parts})
 
@@ -236,7 +238,7 @@ def to_google_messages(ctx: Context) -> tuple[str, list[dict]]:
             parts = []
             for r in msg.results:
                 parts.append({
-                    "functionResponse": {
+                    "function_response": {
                         "name": r.name,
                         "response": {"content": r.content},
                     }
@@ -251,7 +253,7 @@ def _block_to_google(block: ContentBlock) -> dict:
         return {"text": block.text}
     if isinstance(block, ImageContent):
         return {
-            "inlineData": {"mimeType": block.mime_type, "data": block.data}
+            "inline_data": {"mime_type": block.mime_type, "data": block.data}
         }
     raise ValueError(f"Unknown content block type: {type(block)}")
 
