@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import threading
 import uuid
 from dataclasses import asdict, dataclass, field
@@ -32,8 +33,11 @@ logger = logging.getLogger(__name__)
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
-RESULTS_PATH = _REPO_ROOT / "eval" / "results.json"
-REPORT_PATH = _REPO_ROOT / "docs" / "eval_report.pdf"
+# Override these in deployments where /app/eval is part of the image and
+# would be wiped on container recreation. The prod overlay mounts a named
+# volume at /app/var/eval and points these env vars there.
+RESULTS_PATH = Path(os.getenv("EVAL_RESULTS_PATH", str(_REPO_ROOT / "eval" / "results.json")))
+REPORT_PATH = Path(os.getenv("EVAL_REPORT_PATH", str(_REPO_ROOT / "docs" / "eval_report.pdf")))
 
 
 # ── In-memory run state ──────────────────────────────────────────────────

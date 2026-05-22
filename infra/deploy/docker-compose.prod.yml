@@ -39,6 +39,13 @@ services:
              uvicorn services.api.main:app --host 0.0.0.0 --port 8000"
     environment:
       CORS_ORIGINS: '["https://${PUBLIC_HOSTNAME}"]'
+      # Persist eval artifacts to a mounted volume so they survive
+      # container recreation (e.g. each CI deploy).
+      EVAL_RESULTS_PATH: /app/var/eval/results.json
+      EVAL_REPORT_PATH: /app/var/eval/eval_report.pdf
+      EVAL_COST_MD_PATH: /app/var/eval/eval_cost_latency.md
+    volumes:
+      - eval_artifacts:/app/var/eval
 
   chatbot:
     build:
@@ -77,3 +84,4 @@ services:
 volumes:
   caddy_data:
   caddy_config:
+  eval_artifacts:

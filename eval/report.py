@@ -41,9 +41,23 @@ from reportlab.platypus import (
     TableStyle,
 )
 
-RESULTS_PATH = Path(__file__).resolve().parent / "results.json"
-OUTPUT_PATH = Path(__file__).resolve().parent.parent / "docs" / "eval_report.pdf"
-COST_MD_PATH = Path(__file__).resolve().parent.parent / "docs" / "eval_cost_latency.md"
+import os as _os
+
+# Same override pattern as services/api/routers/eval.py — when running
+# inside the api container the prod overlay points these at a mounted
+# named volume so artifacts survive container recreation.
+RESULTS_PATH = Path(_os.getenv(
+    "EVAL_RESULTS_PATH",
+    str(Path(__file__).resolve().parent / "results.json"),
+))
+OUTPUT_PATH = Path(_os.getenv(
+    "EVAL_REPORT_PATH",
+    str(Path(__file__).resolve().parent.parent / "docs" / "eval_report.pdf"),
+))
+COST_MD_PATH = Path(_os.getenv(
+    "EVAL_COST_MD_PATH",
+    str(Path(__file__).resolve().parent.parent / "docs" / "eval_cost_latency.md"),
+))
 
 OSS_COLOR = "#7C3AED"
 FRONTIER_COLOR = "#0EA5E9"
