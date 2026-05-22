@@ -505,8 +505,10 @@ TTL date + INTERVAL 90 DAY;
 
 Startup order: `postgres + clickhouse + redis` must be healthy before
 `api`. `api` runs `python scripts/run_migrations.py` before `uvicorn`.
-`chatbot` depends on `api`. vLLM is **not** in the local compose — for the
-public deployment it's added via `infra/deploy/docker-compose.prod.yml`.
+`chatbot` depends on `api`. vLLM is **not** in the default compose — run a
+self-hosted instance separately and set `VLLM_BASE_URL`, or use OpenCode /
+HuggingFace for OSS. The prod overlay (`infra/deploy/docker-compose.prod.yml`)
+adds Caddy and hardening only; it does **not** start vLLM.
 
 ---
 
@@ -548,12 +550,19 @@ L2/L3 don't overlap.
 - `eval/results.json` — `{metadata, static_results, agent_results}`. Each
   row carries both models' responses (or full trajectories), heuristic
   pass/fail, judge scores, latency, tokens, cost.
-- `docs/eval_report.pdf` — 5 pages:
-  1. Summary cards + static radar + heuristic compliance + verdict
-  2. Static per-category bars + latency/cost/jailbreak table
-  3. Notable static failures (worst 5 per model)
-  4. Agent 5-axis cards + 5-axis radar + hop/error summary
-  5. Agent per-category bars + worst-3 trajectories per model
+- `docs/eval_report.pdf` — 9 pages when both static and agent sections are
+  present (see the module docstring in `eval/report.py`):
+  1. Executive summary — score cards + radar + heuristic compliance + verdict
+  2. Static — methodology (categories, axes, score key)
+  3. Static — per-category cards + latency/cost table
+  4. Static — worst 3 responses per model
+  5. Agent — methodology (categories, tools, axes, score key)
+  6. Agent — 5-axis score cards + radar + hop/error summary
+  7. Agent — per-category cards
+  8. Agent — trajectory walkthrough (one full prompt, both models)
+  9. Agent — worst 3 trajectories per model
+- `docs/eval_cost_latency.md` — token/cost/latency rollup generated alongside
+  the PDF.
 
 ### 10.3 UI surface
 
@@ -623,26 +632,26 @@ python eval/report.py       # → docs/eval_report.pdf + docs/eval_cost_latency.
 
 ### Public deployment (Azure VM)
 
-A single `Standard_NC4as_T4_v3` VM hosts the whole stack — FastAPI, Next.js,
-Postgres, ClickHouse, Redis, Prometheus, Grafana, *and* vLLM serving
-Qwen2.5-1.5B-Instruct (registered with `supports_tools=True` so the L3 agent
-eval can drive it). Caddy fronts everything: TLS via Let's Encrypt, bearer-
-token auth on `/v1/*`, reverse proxies `/api/*`, `/grafana/*`, `/` → chatbot.
+A single `Standard_E8s_v5` CPU VM hosts the stack — FastAPI, Next.js, Postgres,
+ClickHouse, Redis, Prometheus, Grafana — behind Caddy with TLS. OSS inference
+uses hosted **OpenCode Go** (`OPENCODE_API_KEY`); there is no on-VM vLLM in
+this deployment path. Caddy reverse-proxies `/api/*`, `/grafana/*`, and `/`
+→ chatbot.
 
 ```bash
 az login
-./infra/deploy/deploy.sh --anthropic-key "$ANTHROPIC_API_KEY"
-# prints https://ollive-XXX.eastus.cloudapp.azure.com + bearer token
+./infra/deploy/deploy.sh \
+    --anthropic-key "$ANTHROPIC_API_KEY" \
+    --opencode-key  "$OPENCODE_API_KEY"
+# prints https://ollive-XXX.eastus.cloudapp.azure.com + credentials
 ```
 
 Full runbook in `infra/deploy/README.md`. The prod overlay
 (`infra/deploy/docker-compose.prod.yml`) is composed on top of the root
-`docker-compose.yml` — it adds the `vllm` and `caddy` services, drops
-`--reload` from the API, and rebinds Postgres/ClickHouse/Redis/Prometheus
-to `127.0.0.1` for defense in depth.
+`docker-compose.yml` — it adds the `caddy` service, drops `--reload` from
+the API, and removes host port binds on internal services for defense in depth.
 
-Cost: ~$0.526/hr on-demand (~$380/mo). vLLM uses ~4 GB of the 16 GB T4,
-leaving headroom for batched eval traffic.
+Cost: ~$0.50/hr on-demand (~$360/mo) for the default VM SKU.
 
 ### Guardrails
 
