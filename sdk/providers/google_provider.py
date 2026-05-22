@@ -67,7 +67,7 @@ async def stream_google(
     # Gemini 2.5+ supports extended thinking. ctx.thinking controls it
     # (True = on with default budget, int = budget, False = disable).
     if model.supports_reasoning and ctx.thinking is not False:
-        budget = ctx.thinking if isinstance(ctx.thinking, int) else None
+        budget = ctx.thinking if type(ctx.thinking) is int else None
         thinking_cfg: dict = {"include_thoughts": True}
         if budget is not None:
             thinking_cfg["thinking_budget"] = budget
