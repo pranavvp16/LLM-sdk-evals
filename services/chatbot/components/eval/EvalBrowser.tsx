@@ -88,6 +88,13 @@ export function EvalBrowser() {
 
   const selected = rows.find((r) => r.prompt_id === selectedId) ?? rows[0];
 
+  // Returning to the list when a filter clears all rows avoids a mobile dead-end.
+  useEffect(() => {
+    if (rows.length === 0) {
+      setMobileShowDetail(false);
+    }
+  }, [rows.length]);
+
   async function onRun() {
     setRunErr(null);
     try {
@@ -145,22 +152,33 @@ export function EvalBrowser() {
           <div className={`overflow-hidden bg-white ${mobileShowDetail ? "block" : "hidden lg:block"}`}>
             {selected ? (
               <>
-                <button
-                  type="button"
-                  onClick={() => setMobileShowDetail(false)}
-                  className="border-b border-neutral-200 px-4 py-2 text-left text-xs text-neutral-600 hover:bg-neutral-50 lg:hidden"
-                >
-                  ← Back to prompts
-                </button>
+                <MobileBackButton onClick={() => setMobileShowDetail(false)} />
                 <PromptDetail row={selected} />
               </>
             ) : (
-              <div className="p-6 text-sm text-neutral-500">No prompts in filter.</div>
+              <>
+                {mobileShowDetail && (
+                  <MobileBackButton onClick={() => setMobileShowDetail(false)} />
+                )}
+                <div className="p-6 text-sm text-neutral-500">No prompts in filter.</div>
+              </>
             )}
           </div>
         </div>
       )}
     </div>
+  );
+}
+
+function MobileBackButton({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="border-b border-neutral-200 px-4 py-2 text-left text-xs text-neutral-600 hover:bg-neutral-50 lg:hidden"
+    >
+      ← Back to prompts
+    </button>
   );
 }
 
@@ -263,30 +281,34 @@ function PromptList({
 }) {
   return (
     <nav className="overflow-y-auto border-r border-neutral-200 bg-neutral-50">
-      <ul>
-        {rows.map((r) => {
-          const active = r.prompt_id === selectedId;
-          return (
-            <li key={r.prompt_id}>
-              <button
-                type="button"
-                onClick={() => onSelect(r.prompt_id)}
-                className={`flex w-full items-center justify-between gap-2 border-b border-neutral-200 px-3 py-2 text-left text-xs ${
-                  active ? "bg-white" : "hover:bg-white"
-                }`}
-              >
-                <span className="flex min-w-0 items-center gap-2">
-                  <CategoryBadge category={r.category} />
-                  <span className="truncate font-mono">{r.prompt_id}</span>
-                </span>
-                <span className="hidden shrink-0 sm:flex">
-                  <RowScoreSummary row={r} />
-                </span>
-              </button>
-            </li>
-          );
-        })}
-      </ul>
+      {rows.length === 0 ? (
+        <p className="p-4 text-xs text-neutral-500">No prompts match this filter.</p>
+      ) : (
+        <ul>
+          {rows.map((r) => {
+            const active = r.prompt_id === selectedId;
+            return (
+              <li key={r.prompt_id}>
+                <button
+                  type="button"
+                  onClick={() => onSelect(r.prompt_id)}
+                  className={`flex w-full items-center justify-between gap-2 border-b border-neutral-200 px-3 py-2 text-left text-xs ${
+                    active ? "bg-white" : "hover:bg-white"
+                  }`}
+                >
+                  <span className="flex min-w-0 items-center gap-2">
+                    <CategoryBadge category={r.category} />
+                    <span className="truncate font-mono">{r.prompt_id}</span>
+                  </span>
+                  <span className="hidden shrink-0 sm:flex">
+                    <RowScoreSummary row={r} />
+                  </span>
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
     </nav>
   );
 }
