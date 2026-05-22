@@ -46,7 +46,7 @@ export function ThinkingBlock({ text }: { text: string }) {
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
-        className="flex w-full items-center gap-2 px-2 py-1 hover:bg-amber-100"
+        className="flex min-h-[44px] w-full items-center gap-2 px-2 py-1 hover:bg-amber-100"
       >
         <span className="text-amber-600">{open ? "▾" : "▸"}</span>
         <span className="font-mono text-[10px] uppercase tracking-wide text-amber-700">
@@ -80,7 +80,7 @@ export function ToolCard({
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
-        className="flex w-full items-center justify-between gap-2 rounded-t-lg px-3 py-2 hover:bg-neutral-50"
+        className="flex min-h-[44px] w-full items-center justify-between gap-2 rounded-t-lg px-3 py-2 hover:bg-neutral-50"
       >
         <span className="flex items-center gap-2">
           <span className="text-neutral-400">{open ? "▾" : "▸"}</span>

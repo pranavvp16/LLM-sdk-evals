@@ -48,8 +48,8 @@ export default function DashboardPage() {
   const errorRate = t && t.total_calls > 0 ? (t.error_calls / t.total_calls) * 100 : 0;
 
   return (
-    <main className="mx-auto max-w-7xl p-6">
-      <header className="mb-6 flex items-center justify-between">
+    <main className="mx-auto max-w-7xl p-4 sm:p-6">
+      <header className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <Link href="/" className="text-sm text-neutral-500 hover:underline">
             ← Back
@@ -57,7 +57,7 @@ export default function DashboardPage() {
           <h1 className="mt-1 text-2xl font-semibold">Inference Dashboard</h1>
         </div>
         <select
-          className="rounded border px-2 py-1.5 text-sm"
+          className="w-full rounded border px-2 py-1.5 text-sm sm:w-auto"
           value={hours}
           onChange={(e) => setHours(Number(e.target.value))}
         >

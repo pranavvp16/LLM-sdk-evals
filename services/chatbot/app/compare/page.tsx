@@ -74,7 +74,7 @@ const initial = (pick: ModelOption): ColumnState => ({
 
 export default function ComparePage() {
   return (
-    <Suspense fallback={<main className="mx-auto max-w-6xl p-6 text-sm text-neutral-500">Loading…</main>}>
+    <Suspense fallback={<main className="mx-auto max-w-6xl p-4 text-sm text-neutral-500 sm:p-6">Loading…</main>}>
       <ComparePageInner />
     </Suspense>
   );
@@ -95,8 +95,8 @@ function ComparePageInner() {
   );
 
   return (
-    <main className="mx-auto max-w-6xl p-6">
-      <header className="mb-4 flex items-center justify-between">
+    <main className="mx-auto max-w-6xl p-4 sm:p-6">
+      <header className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <Link href="/" className="text-sm text-neutral-500 hover:underline">
             ← Back
@@ -256,7 +256,7 @@ function LiveCompare() {
         conversation — follow-up questions reference earlier turns.
       </p>
       <form
-        className="mb-4 flex items-end gap-2"
+        className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-end"
         onSubmit={(e) => {
           e.preventDefault();
           void run();
@@ -276,32 +276,34 @@ function LiveCompare() {
           }}
           disabled={busy}
         />
-        <label className="flex select-none items-center gap-1 text-xs text-neutral-600">
-          <input
-            type="checkbox"
-            checked={thinking}
-            onChange={(e) => setThinking(e.target.checked)}
-            disabled={busy}
-          />
-          thinking
-        </label>
-        {busy ? (
-          <button
-            type="button"
-            className="rounded bg-red-600 px-3 py-2 text-sm font-medium text-white"
-            onClick={stop}
-          >
-            Stop
-          </button>
-        ) : (
-          <button
-            type="submit"
-            className="rounded bg-black px-3 py-2 text-sm font-medium text-white disabled:opacity-40"
-            disabled={!prompt.trim()}
-          >
-            Run both
-          </button>
-        )}
+        <div className="flex items-center gap-2">
+          <label className="flex min-h-[44px] flex-1 select-none items-center gap-1 text-xs text-neutral-600 sm:min-h-0 sm:flex-none">
+            <input
+              type="checkbox"
+              checked={thinking}
+              onChange={(e) => setThinking(e.target.checked)}
+              disabled={busy}
+            />
+            thinking
+          </label>
+          {busy ? (
+            <button
+              type="button"
+              className="min-h-[44px] flex-1 rounded bg-red-600 px-3 py-2 text-sm font-medium text-white sm:flex-none sm:min-h-0"
+              onClick={stop}
+            >
+              Stop
+            </button>
+          ) : (
+            <button
+              type="submit"
+              className="min-h-[44px] flex-1 rounded bg-black px-3 py-2 text-sm font-medium text-white disabled:opacity-40 sm:flex-none sm:min-h-0"
+              disabled={!prompt.trim()}
+            >
+              Run both
+            </button>
+          )}
+        </div>
       </form>
 
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
@@ -339,8 +341,8 @@ function Column({
 }) {
   const turnCount = state.turns.filter((t) => t.kind === "user").length;
   return (
-    <section className="flex h-[60vh] flex-col rounded border">
-      <header className="flex items-center justify-between gap-2 border-b bg-neutral-50 px-3 py-2">
+    <section className="flex h-[50vh] flex-col rounded border sm:h-[55vh] md:h-[60vh]">
+      <header className="flex flex-col gap-2 border-b bg-neutral-50 px-3 py-2 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-2">
           <span className="text-xs uppercase tracking-wide text-neutral-500">{title}</span>
           {turnCount > 0 && (
@@ -349,9 +351,9 @@ function Column({
             </span>
           )}
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
           <select
-            className="rounded border px-2 py-1 text-xs"
+            className="w-full rounded border px-2 py-1 text-xs sm:w-auto"
             value={`${state.pick.provider}/${state.pick.model}`}
             onChange={(e) => {
               const found = MODEL_OPTIONS.find(

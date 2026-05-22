@@ -143,8 +143,8 @@ export default function ChatPage({ params }: PageProps) {
   }
 
   return (
-    <main className="mx-auto flex h-screen max-w-3xl flex-col p-6">
-      <header className="flex items-center justify-between border-b pb-4">
+    <main className="mx-auto flex h-dvh max-h-dvh max-w-3xl flex-col p-4 pb-safe sm:p-6">
+      <header className="flex flex-col items-start gap-2 border-b pb-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <Link href="/" className="text-sm text-neutral-500 hover:underline">
             ← All conversations
@@ -158,7 +158,7 @@ export default function ChatPage({ params }: PageProps) {
             {provider} / {model}
           </p>
         </div>
-        <button className="text-sm text-red-600 hover:underline" onClick={onCancel}>
+        <button className="min-h-[44px] text-sm text-red-600 hover:underline sm:min-h-0" onClick={onCancel}>
           {busy ? "Stop" : "Cancel"}
         </button>
       </header>
@@ -176,7 +176,7 @@ export default function ChatPage({ params }: PageProps) {
       </section>
 
       <form
-        className="flex items-end gap-2 border-t pt-4"
+        className="flex flex-col gap-2 border-t pt-4 sm:flex-row sm:items-end"
         onSubmit={(e) => {
           e.preventDefault();
           void send();
@@ -196,22 +196,24 @@ export default function ChatPage({ params }: PageProps) {
           }}
           disabled={busy}
         />
-        <label className="flex select-none items-center gap-1 text-xs text-neutral-600">
-          <input
-            type="checkbox"
-            checked={thinking}
-            onChange={(e) => setThinking(e.target.checked)}
-            disabled={busy}
-          />
-          thinking
-        </label>
-        <button
-          type="submit"
-          className="rounded bg-black px-3 py-2 text-sm font-medium text-white disabled:opacity-40"
-          disabled={busy || !input.trim()}
-        >
-          Send
-        </button>
+        <div className="flex items-center gap-2">
+          <label className="flex min-h-[44px] flex-1 select-none items-center gap-1 text-xs text-neutral-600 sm:min-h-0 sm:flex-none">
+            <input
+              type="checkbox"
+              checked={thinking}
+              onChange={(e) => setThinking(e.target.checked)}
+              disabled={busy}
+            />
+            thinking
+          </label>
+          <button
+            type="submit"
+            className="min-h-[44px] flex-1 rounded bg-black px-3 py-2 text-sm font-medium text-white disabled:opacity-40 sm:flex-none sm:min-h-0"
+            disabled={busy || !input.trim()}
+          >
+            Send
+          </button>
+        </div>
       </form>
     </main>
   );

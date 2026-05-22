@@ -30,6 +30,7 @@ export function EvalBrowser() {
   const [loading, setLoading] = useState(true);
   const [loadErr, setLoadErr] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [mobileShowDetail, setMobileShowDetail] = useState(false);
   const [filter, setFilter] = useState<"all" | "static" | "agent" | "failures">("all");
   const [run, setRun] = useState<RunStatus | null>(null);
   const [runErr, setRunErr] = useState<string | null>(null);
@@ -117,7 +118,7 @@ export function EvalBrowser() {
   }
 
   return (
-    <div className="flex h-[calc(100vh-8rem)] flex-col gap-3">
+    <div className="flex min-h-[60dvh] flex-col gap-3 lg:h-[calc(100vh-8rem)]">
       <Header
         payload={payload}
         run={run}
@@ -130,11 +131,29 @@ export function EvalBrowser() {
       {!payload ? (
         <EmptyState onRun={onRun} runErr={runErr} run={run} />
       ) : (
-        <div className="grid flex-1 grid-cols-[18rem_1fr] overflow-hidden rounded-lg border border-neutral-200">
-          <PromptList rows={rows} selectedId={selected?.prompt_id ?? null} onSelect={setSelectedId} />
-          <div className="overflow-hidden bg-white">
+        <div className="grid flex-1 grid-cols-1 overflow-hidden rounded-lg border border-neutral-200 lg:grid-cols-[18rem_1fr]">
+          <div className={mobileShowDetail ? "hidden lg:block" : "block"}>
+            <PromptList
+              rows={rows}
+              selectedId={selected?.prompt_id ?? null}
+              onSelect={(id) => {
+                setSelectedId(id);
+                setMobileShowDetail(true);
+              }}
+            />
+          </div>
+          <div className={`overflow-hidden bg-white ${mobileShowDetail ? "block" : "hidden lg:block"}`}>
             {selected ? (
-              <PromptDetail row={selected} />
+              <>
+                <button
+                  type="button"
+                  onClick={() => setMobileShowDetail(false)}
+                  className="border-b border-neutral-200 px-4 py-2 text-left text-xs text-neutral-600 hover:bg-neutral-50 lg:hidden"
+                >
+                  ← Back to prompts
+                </button>
+                <PromptDetail row={selected} />
+              </>
             ) : (
               <div className="p-6 text-sm text-neutral-500">No prompts in filter.</div>
             )}
@@ -175,7 +194,7 @@ function Header({
             </p>
           )}
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 overflow-x-auto">
           {(["all", "static", "agent", "failures"] as const).map((f) => (
             <button
               key={f}
@@ -256,11 +275,13 @@ function PromptList({
                   active ? "bg-white" : "hover:bg-white"
                 }`}
               >
-                <span className="flex items-center gap-2">
+                <span className="flex min-w-0 items-center gap-2">
                   <CategoryBadge category={r.category} />
-                  <span className="font-mono">{r.prompt_id}</span>
+                  <span className="truncate font-mono">{r.prompt_id}</span>
                 </span>
-                <RowScoreSummary row={r} />
+                <span className="hidden shrink-0 sm:flex">
+                  <RowScoreSummary row={r} />
+                </span>
               </button>
             </li>
           );
