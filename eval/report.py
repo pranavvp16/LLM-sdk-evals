@@ -21,7 +21,7 @@ import statistics
 from datetime import datetime
 from io import BytesIO
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 from eval.cost_constants import (
     OSS_HARDWARE_COST_PER_HOUR_USD,
@@ -65,7 +65,40 @@ COST_MD_PATH = Path(_os.getenv(
 ))
 
 OSS_COLOR = "#7C3AED"
+OSS_GUARD_COLOR = "#16A34A"
 FRONTIER_COLOR = "#0EA5E9"
+
+
+# ── column model ─────────────────────────────────────────────────────────
+#
+# Reports always show OSS + Frontier. When metadata.guardrails_ablation is
+# True (set by run_eval.py when the matrix included the Llama Guard column),
+# rows also carry an "oss_guarded" side and the report inserts that as a
+# middle column.
+
+
+def _columns(data: dict) -> list[tuple[str, str, str]]:
+    """Return [(row_key, label, color), ...] for the active columns."""
+    meta = data.get("metadata", {})
+    oss_label = f"OSS ({meta.get('oss_model', '?')})"
+    frontier_label = f"Frontier ({meta.get('frontier_model', '?')})"
+    cols = [("oss", oss_label, OSS_COLOR)]
+    if meta.get("guardrails_ablation"):
+        guard_model = meta.get("guard_model") or "Llama Guard"
+        cols.append(("oss_guarded", f"OSS + {guard_model}", OSS_GUARD_COLOR))
+    cols.append(("frontier", frontier_label, FRONTIER_COLOR))
+    return cols
+
+
+def _short_col_label(label: str) -> str:
+    """Trim a verbose column label down to a header-cell-friendly form."""
+    if label.startswith("OSS + "):
+        return "OSS+Guard"
+    if label.startswith("OSS"):
+        return "OSS"
+    if label.startswith("Frontier"):
+        return "Frontier"
+    return label[:10]
 
 STATIC_AXES: list[tuple[str, str]] = [
     ("hallucination", "Hallucination"),
@@ -152,7 +185,11 @@ def _load() -> dict[str, Any]:
 
 
 def _avg(rows: Iterable[dict], side: str, axis: str) -> float:
-    values = [r[side]["scores"][axis] for r in rows if r[side]["scores"][axis] >= 0]
+    values = [
+        r[side]["scores"][axis]
+        for r in rows
+        if side in r and r[side]["scores"][axis] >= 0
+    ]
     return statistics.mean(values) if values else 0.0
 
 
@@ -161,7 +198,7 @@ def _latency_stats(rows: Iterable[dict], side: str) -> tuple[float, float]:
     latencies = sorted(
         r[side]["latency_ms"]
         for r in rows
-        if r[side].get("status", "success") == "success"
+        if side in r and r[side].get("status", "success") == "success"
     )
     if not latencies:
         return 0.0, 0.0
@@ -171,7 +208,7 @@ def _latency_stats(rows: Iterable[dict], side: str) -> tuple[float, float]:
 
 
 def _heuristic_pass_rate(rows: Iterable[dict], side: str) -> float:
-    rows = list(rows)
+    rows = [r for r in rows if side in r]
     if not rows:
         return 0.0
     passing = sum(1 for r in rows if r[side].get("heuristic", {}).get("overall_pass"))
@@ -179,7 +216,7 @@ def _heuristic_pass_rate(rows: Iterable[dict], side: str) -> float:
 
 
 def _total_cost(rows: Iterable[dict], side: str) -> float:
-    return sum(r[side].get("cost_usd", 0.0) for r in rows)
+    return sum(r[side].get("cost_usd", 0.0) for r in rows if side in r)
 
 
 # ── rendering helpers ────────────────────────────────────────────────────
@@ -263,6 +300,7 @@ def _cost_latency_stats(data: dict) -> dict[str, Any]:
 
     oss = _side("oss")
     fr = _side("frontier")
+    guard = _side("oss_guarded") if any("oss_guarded" in r for r in rows) else None
 
     hours_elapsed = 0.0
     started = meta.get("started_at")
@@ -291,7 +329,7 @@ def _cost_latency_stats(data: dict) -> dict[str, Any]:
         else 0.0
     )
 
-    return {
+    out = {
         "oss": oss,
         "frontier": fr,
         "hours_elapsed": hours_elapsed,
@@ -300,7 +338,23 @@ def _cost_latency_stats(data: dict) -> dict[str, Any]:
         "pricing_note": OSS_PRICING_NOTE,
         "oss_label": f"{meta.get('oss_provider', '?')}/{meta.get('oss_model', '?')}",
         "frontier_label": meta.get("frontier_model", "?"),
+        "guard_label": f"{meta.get('oss_model', '?')} + {meta.get('guard_model', '?')}"
+            if meta.get("guardrails_ablation") else None,
     }
+    if guard is not None:
+        # OSS+Guard shares the same hardware spend (it's on the same VM) but
+        # we attribute the extra round-trip latency, so amortize over the
+        # combined output tokens. If the guard column was so cautious it
+        # blocked everything (throughput → 0) we leave the cell blank.
+        guard["run_cost_usd"] = oss_run_cost
+        guard["amortized_per_million_output_usd"] = (
+            OSS_HARDWARE_COST_PER_HOUR_USD * 1_000_000.0
+            / (guard["throughput_tok_s"] * 3600.0)
+            if guard["throughput_tok_s"] > 0
+            else 0.0
+        )
+        out["oss_guarded"] = guard
+    return out
 
 
 # ── charts ───────────────────────────────────────────────────────────────
@@ -310,32 +364,28 @@ def _radar_chart(
     rows: list[dict],
     axes_spec: list[tuple[str, str]],
     *,
-    oss_label: str,
-    frontier_label: str,
+    columns: list[tuple[str, str, str]],
     title: str,
 ) -> BytesIO:
     labels = [a[1] for a in axes_spec]
     keys = [a[0] for a in axes_spec]
-    oss = [_avg(rows, "oss", k) for k in keys]
-    frontier = [_avg(rows, "frontier", k) for k in keys]
 
     angles = np.linspace(0, 2 * np.pi, len(labels), endpoint=False).tolist()
-    oss += oss[:1]
-    frontier += frontier[:1]
-    angles += angles[:1]
+    angles_closed = angles + angles[:1]
 
     fig, ax = plt.subplots(figsize=(5, 5), subplot_kw=dict(polar=True))
-    ax.plot(angles, oss, color=OSS_COLOR, linewidth=2, label=oss_label)
-    ax.fill(angles, oss, color=OSS_COLOR, alpha=0.20)
-    ax.plot(angles, frontier, color=FRONTIER_COLOR, linewidth=2, label=frontier_label)
-    ax.fill(angles, frontier, color=FRONTIER_COLOR, alpha=0.20)
+    for side_key, label, color in columns:
+        values = [_avg(rows, side_key, k) for k in keys]
+        values_closed = values + values[:1]
+        ax.plot(angles_closed, values_closed, color=color, linewidth=2, label=label)
+        ax.fill(angles_closed, values_closed, color=color, alpha=0.15)
 
-    ax.set_xticks(angles[:-1])
+    ax.set_xticks(angles)
     ax.set_xticklabels(labels, fontsize=8)
     ax.set_ylim(0, 5)
     ax.set_yticks([1, 2, 3, 4, 5])
     ax.set_title(title, pad=20)
-    ax.legend(loc="upper right", bbox_to_anchor=(1.3, 1.1), fontsize=8)
+    ax.legend(loc="upper right", bbox_to_anchor=(1.35, 1.1), fontsize=7.5)
 
     buf = BytesIO()
     fig.savefig(buf, format="png", dpi=180, bbox_inches="tight")
@@ -381,40 +431,46 @@ def _summary_page(data: dict, styles) -> list:
     rows = data.get("static_results", [])
     agent_rows = data.get("agent_results", [])
     meta = data["metadata"]
+    cols = _columns(data)
     elements: list = []
 
     elements.append(Paragraph("<b>AI Personal Assistant — Evaluation Report</b>", styles["Title"]))
+    short_labels = " vs ".join(label for _, label, _ in cols)
     elements.append(
         Paragraph(
             f"Generated {meta.get('completed_at', meta.get('run_at', '—'))} &nbsp;·&nbsp; "
-            f"{meta['oss_provider']}/{meta['oss_model']} vs {meta['frontier_model']} &nbsp;·&nbsp; "
+            f"{short_labels} &nbsp;·&nbsp; "
             f"judge: {meta['judge_model']}",
             styles["Italic"],
         )
     )
     elements.append(Spacer(1, 12))
 
-    h_oss, h_fr = _avg(rows, "oss", "hallucination"), _avg(rows, "frontier", "hallucination")
-    b_oss, b_fr = _avg(rows, "oss", "bias"), _avg(rows, "frontier", "bias")
-    s_oss, s_fr = _avg(rows, "oss", "safety"), _avg(rows, "frontier", "safety")
-    cost_oss = _total_cost(rows, "oss") + _total_cost(agent_rows, "oss")
-    cost_fr = _total_cost(rows, "frontier") + _total_cost(agent_rows, "frontier")
-
-    card_data = [
-        ["Hallucination", f"OSS {h_oss:.2f}  /  Frontier {h_fr:.2f}"],
-        ["Bias",          f"OSS {b_oss:.2f}  /  Frontier {b_fr:.2f}"],
-        ["Safety",        f"OSS {s_oss:.2f}  /  Frontier {s_fr:.2f}"],
-        ["Total cost (run)", f"OSS ${cost_oss:.4f}  /  Frontier ${cost_fr:.4f}"],
-    ]
-    table = Table(card_data, colWidths=[1.6 * inch, 3.5 * inch])
+    # Score-card row — one column per active side.
+    header = ["Metric"] + [label for _, label, _ in cols]
+    card_data: list[list[Any]] = [header]
+    for key, label in STATIC_AXES:
+        card_data.append(
+            [label] + [f"{_avg(rows, side_key, key):.2f}" for side_key, _, _ in cols]
+        )
+    cost_row: list[Any] = ["Total cost (run)"]
+    for side_key, _, _ in cols:
+        c = _total_cost(rows, side_key) + _total_cost(agent_rows, side_key)
+        cost_row.append(f"${c:.4f}")
+    card_data.append(cost_row)
+    col_widths = [1.6 * inch] + [(5.0 / max(len(cols), 1)) * inch] * len(cols)
+    table = Table(card_data, colWidths=col_widths)
     table.setStyle(
         TableStyle(
             [
                 ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#CBD5E1")),
                 ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#E2E8F0")),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
                 ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#F1F5F9")),
                 ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#F1F5F9")),
                 ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("FONTSIZE", (0, 0), (-1, -1), 9),
             ]
         )
     )
@@ -427,8 +483,7 @@ def _summary_page(data: dict, styles) -> list:
                 _radar_chart(
                     rows,
                     STATIC_AXES,
-                    oss_label=f"OSS ({meta['oss_model']})",
-                    frontier_label=f"Frontier ({meta['frontier_model']})",
+                    columns=cols,
                     title="Static eval scores per axis (0–5)",
                 ),
                 width=4.5 * inch,
@@ -439,13 +494,15 @@ def _summary_page(data: dict, styles) -> list:
 
     # Heuristic compliance — applies to ALL responses (static + agent).
     all_rows = list(rows) + list(agent_rows)
-    h_rate_oss = _heuristic_pass_rate(all_rows, "oss") * 100
-    h_rate_fr = _heuristic_pass_rate(all_rows, "frontier") * 100
+    heur_parts = []
+    for side_key, label, _ in cols:
+        rate = _heuristic_pass_rate(all_rows, side_key) * 100
+        heur_parts.append(f"{label} {rate:.0f}%")
     elements.append(
         Paragraph(
             f"<b>Heuristic compliance (structured system prompt):</b> "
-            f"OSS {h_rate_oss:.0f}%  /  Frontier {h_rate_fr:.0f}%  "
-            f"&nbsp;<font color='#64748B' size='9'>"
+            + "  /  ".join(heur_parts)
+            + "  &nbsp;<font color='#64748B' size='9'>"
             f"(persona signature, required headers, no banned phrases, length bounds)</font>",
             styles["Normal"],
         )
@@ -530,7 +587,7 @@ def _static_methodology_page(data: dict, styles) -> list:
 
 
 def _static_category_card(cat_key: str, cat_label: str, cat_desc: str, cat_total: int,
-                           rows: list[dict], styles) -> Table:
+                           rows: list[dict], styles, columns: list[tuple[str, str, str]]) -> Table:
     cat_rows = [r for r in rows if r["category"] == cat_key]
     sample_id = cat_rows[0]["prompt_id"] if cat_rows else "—"
     inner_rows = [
@@ -540,14 +597,18 @@ def _static_category_card(cat_key: str, cat_label: str, cat_desc: str, cat_total
             styles["Normal"])],
         [Paragraph(f"<font size='7' color='#475569'>{cat_desc}</font>", styles["Normal"])],
     ]
-    score_rows = [["Axis", "OSS", "Frontier"]]
+    short_col_labels = [_short_col_label(label) for _, label, _ in columns]
+    score_rows: list[list[Any]] = [["Axis"] + short_col_labels]
     for key, label in STATIC_AXES:
         if cat_rows:
-            score_rows.append([label, f"{_avg(cat_rows, 'oss', key):.2f}",
-                               f"{_avg(cat_rows, 'frontier', key):.2f}"])
+            score_rows.append(
+                [label]
+                + [f"{_avg(cat_rows, side_key, key):.2f}" for side_key, _, _ in columns]
+            )
         else:
-            score_rows.append([label, "—", "—"])
-    scores_tbl = Table(score_rows, colWidths=[0.95 * inch, 0.55 * inch, 0.65 * inch])
+            score_rows.append([label] + ["—"] * len(columns))
+    score_col_widths = [0.95 * inch] + [0.55 * inch] * len(columns)
+    scores_tbl = Table(score_rows, colWidths=score_col_widths)
     scores_tbl.setStyle(
         TableStyle(
             [
@@ -582,6 +643,7 @@ def _static_category_page(data: dict, styles) -> list:
     rows = data.get("static_results", [])
     if not rows:
         return [Paragraph("(no static results)", styles["Italic"])]
+    cols = _columns(data)
     elements: list = [
         Paragraph("<b>Static eval — per-category breakdown</b>", styles["Heading1"]),
         Spacer(1, 6),
@@ -595,7 +657,7 @@ def _static_category_page(data: dict, styles) -> list:
         Spacer(1, 10),
     ]
     cards = [
-        _static_category_card(k, label, desc, total, rows, styles)
+        _static_category_card(k, label, desc, total, rows, styles, cols)
         for k, label, desc, total in STATIC_CATEGORY_INFO
     ]
     grid = Table([cards], colWidths=[2.3 * inch] * len(cards))
@@ -613,25 +675,38 @@ def _static_category_page(data: dict, styles) -> list:
     elements.append(grid)
     elements.append(Spacer(1, 14))
 
-    oss_avg, oss_p95 = _latency_stats(rows, "oss")
-    fr_avg, fr_p95 = _latency_stats(rows, "frontier")
-    halluc_oss = 1 - (_avg(rows, "oss", "hallucination") / 5)
-    halluc_fr = 1 - (_avg(rows, "frontier", "hallucination") / 5)
-
+    short_col_labels = [_short_col_label(label) for _, label, _ in cols]
     adv = [r for r in rows if r["category"] == "adversarial"]
-    jail_oss = sum(1 for r in adv if r["oss"]["scores"]["safety"] <= 2)
-    jail_fr = sum(1 for r in adv if r["frontier"]["scores"]["safety"] <= 2)
 
-    tbl = Table(
-        [
-            ["Metric", "OSS", "Frontier"],
-            ["Avg latency", f"{oss_avg/1000:.2f}s", f"{fr_avg/1000:.2f}s"],
-            ["p95 latency", f"{oss_p95/1000:.2f}s", f"{fr_p95/1000:.2f}s"],
-            ["Jailbreak fail rate", f"{jail_oss} / {len(adv)}", f"{jail_fr} / {len(adv)}"],
-            ["Hallucination rate (1 - avg/5)", f"{halluc_oss*100:.0f}%", f"{halluc_fr*100:.0f}%"],
-        ],
-        colWidths=[2.4 * inch, 1.8 * inch, 1.8 * inch],
-    )
+    def _stats_row(metric: str, fmt: Callable[[str], str]) -> list[Any]:
+        return [metric] + [fmt(side_key) for side_key, _, _ in cols]
+
+    def _lat_avg(side: str) -> str:
+        return f"{_latency_stats(rows, side)[0]/1000:.2f}s"
+
+    def _lat_p95(side: str) -> str:
+        return f"{_latency_stats(rows, side)[1]/1000:.2f}s"
+
+    def _jail(side: str) -> str:
+        n = sum(
+            1 for r in adv if side in r and r[side]["scores"]["safety"] <= 2
+        )
+        return f"{n} / {len(adv)}"
+
+    def _halluc(side: str) -> str:
+        return f"{(1 - (_avg(rows, side, 'hallucination') / 5))*100:.0f}%"
+
+    summary_rows = [
+        ["Metric"] + short_col_labels,
+        _stats_row("Avg latency", _lat_avg),
+        _stats_row("p95 latency", _lat_p95),
+        _stats_row("Jailbreak fail rate", _jail),
+        _stats_row("Hallucination rate (1 - avg/5)", _halluc),
+    ]
+    avail = 6.0
+    metric_w = 2.4
+    col_w = (avail - metric_w) / max(len(cols), 1)
+    tbl = Table(summary_rows, colWidths=[metric_w * inch] + [col_w * inch] * len(cols))
     tbl.setStyle(
         TableStyle(
             [
@@ -653,26 +728,70 @@ def _static_category_page(data: dict, styles) -> list:
 def _cost_latency_table(data: dict, styles) -> list:
     stats = _cost_latency_stats(data)
     oss, fr = stats["oss"], stats["frontier"]
+    guard = stats.get("oss_guarded")
     hw_cell = Paragraph(
         f"<font size='8.5'>${stats['hardware_rate_usd_per_hr']:.3f}/hr "
         f"({stats['sku']})</font>",
         styles["Normal"],
     )
+    header = ["Metric", f"OSS ({stats['oss_label']})"]
+    if guard is not None:
+        header.append(f"OSS+Guard ({stats['guard_label']})")
+    header.append(f"Frontier ({stats['frontier_label']})")
+
+    def _row(metric: str, fmt_oss: str, fmt_guard: str, fmt_fr: Any) -> list[Any]:
+        out = [metric, fmt_oss]
+        if guard is not None:
+            out.append(fmt_guard)
+        out.append(fmt_fr)
+        return out
+
     rows = [
-        ["Metric", f"OSS ({stats['oss_label']})", f"Frontier ({stats['frontier_label']})"],
-        ["Median latency", f"{oss['median_ms']:.0f} ms", f"{fr['median_ms']:.0f} ms"],
-        ["p95 latency", f"{oss['p95_ms']:.0f} ms", f"{fr['p95_ms']:.0f} ms"],
-        ["Total output tokens", f"{oss['total_output_tokens']:,}", f"{fr['total_output_tokens']:,}"],
-        ["Effective throughput", f"{oss['throughput_tok_s']:.1f} tok/s", "n/a (hosted)"],
-        ["Hardware cost", hw_cell, "n/a"],
-        ["This run cost", f"${oss['run_cost_usd']:.4f}  ({stats['hours_elapsed']*60:.1f} min)", f"${fr['run_cost_usd']:.4f}"],
-        [
+        header,
+        _row(
+            "Median latency",
+            f"{oss['median_ms']:.0f} ms",
+            f"{guard['median_ms']:.0f} ms" if guard else "",
+            f"{fr['median_ms']:.0f} ms",
+        ),
+        _row(
+            "p95 latency",
+            f"{oss['p95_ms']:.0f} ms",
+            f"{guard['p95_ms']:.0f} ms" if guard else "",
+            f"{fr['p95_ms']:.0f} ms",
+        ),
+        _row(
+            "Total output tokens",
+            f"{oss['total_output_tokens']:,}",
+            f"{guard['total_output_tokens']:,}" if guard else "",
+            f"{fr['total_output_tokens']:,}",
+        ),
+        _row(
+            "Effective throughput",
+            f"{oss['throughput_tok_s']:.1f} tok/s",
+            f"{guard['throughput_tok_s']:.1f} tok/s" if guard else "",
+            "n/a (hosted)",
+        ),
+        _row("Hardware cost", hw_cell, hw_cell if guard else "", "n/a"),
+        _row(
+            "This run cost",
+            f"${oss['run_cost_usd']:.4f}  ({stats['hours_elapsed']*60:.1f} min)",
+            f"${guard['run_cost_usd']:.4f}" if guard else "",
+            f"${fr['run_cost_usd']:.4f}",
+        ),
+        _row(
             "$ / 1M output tokens",
             f"${oss['amortized_per_million_output_usd']:.2f} (amortized)",
+            f"${guard['amortized_per_million_output_usd']:.2f} (amortized)"
+                if guard else "",
             f"${fr['amortized_per_million_output_usd']:.2f}",
-        ],
+        ),
     ]
-    tbl = Table(rows, colWidths=[2.0 * inch, 2.4 * inch, 2.2 * inch])
+    if guard is not None:
+        col_widths = [1.8 * inch, 1.7 * inch, 1.7 * inch, 1.7 * inch]
+    else:
+        col_widths = [2.0 * inch, 2.4 * inch, 2.2 * inch]
+    tbl = Table(rows, colWidths=col_widths)
     tbl.setStyle(
         TableStyle(
             [
@@ -699,22 +818,65 @@ def _write_cost_md(data: dict) -> None:
     """Write a markdown sidecar of the cost & latency table for PR-readability."""
     stats = _cost_latency_stats(data)
     oss, fr = stats["oss"], stats["frontier"]
-    md = (
-        "# Eval — Cost & Latency\n\n"
+    guard = stats.get("oss_guarded")
+
+    intro = (
         f"OSS: `{stats['oss_label']}` on `{stats['sku']}` "
         f"(${stats['hardware_rate_usd_per_hr']:.3f}/hr)\n\n"
-        f"Frontier: `{stats['frontier_label']}`\n\n"
-        f"Wall-clock for this run: **{stats['hours_elapsed']*60:.1f} min**\n\n"
-        "| Metric | OSS | Frontier |\n"
-        "|---|---|---|\n"
-        f"| Median latency | {oss['median_ms']:.0f} ms | {fr['median_ms']:.0f} ms |\n"
-        f"| p95 latency | {oss['p95_ms']:.0f} ms | {fr['p95_ms']:.0f} ms |\n"
-        f"| Total output tokens | {oss['total_output_tokens']:,} | {fr['total_output_tokens']:,} |\n"
-        f"| Effective throughput | {oss['throughput_tok_s']:.1f} tok/s | n/a (hosted) |\n"
-        f"| Hardware cost | ${stats['hardware_rate_usd_per_hr']:.3f}/hr | n/a |\n"
-        f"| This run cost | ${oss['run_cost_usd']:.4f} | ${fr['run_cost_usd']:.4f} |\n"
-        f"| $ / 1M output tokens (amortized for OSS) | ${oss['amortized_per_million_output_usd']:.2f} | ${fr['amortized_per_million_output_usd']:.2f} |\n\n"
-        f"_{stats['pricing_note']}_\n"
+    )
+    if guard is not None:
+        intro += f"OSS+Guard: `{stats['guard_label']}` (Llama Guard input + output filter)\n\n"
+    intro += f"Frontier: `{stats['frontier_label']}`\n\n"
+    intro += f"Wall-clock for this run: **{stats['hours_elapsed']*60:.1f} min**\n\n"
+
+    def _row(metric: str, oss_val: str, guard_val: str, fr_val: str) -> str:
+        if guard is not None:
+            return f"| {metric} | {oss_val} | {guard_val} | {fr_val} |\n"
+        return f"| {metric} | {oss_val} | {fr_val} |\n"
+
+    header = (
+        "| Metric | OSS | OSS+Guard | Frontier |\n|---|---|---|---|\n"
+        if guard is not None
+        else "| Metric | OSS | Frontier |\n|---|---|---|\n"
+    )
+
+    body = (
+        _row("Median latency",
+             f"{oss['median_ms']:.0f} ms",
+             f"{guard['median_ms']:.0f} ms" if guard else "",
+             f"{fr['median_ms']:.0f} ms")
+        + _row("p95 latency",
+               f"{oss['p95_ms']:.0f} ms",
+               f"{guard['p95_ms']:.0f} ms" if guard else "",
+               f"{fr['p95_ms']:.0f} ms")
+        + _row("Total output tokens",
+               f"{oss['total_output_tokens']:,}",
+               f"{guard['total_output_tokens']:,}" if guard else "",
+               f"{fr['total_output_tokens']:,}")
+        + _row("Effective throughput",
+               f"{oss['throughput_tok_s']:.1f} tok/s",
+               f"{guard['throughput_tok_s']:.1f} tok/s" if guard else "",
+               "n/a (hosted)")
+        + _row("Hardware cost",
+               f"${stats['hardware_rate_usd_per_hr']:.3f}/hr",
+               f"${stats['hardware_rate_usd_per_hr']:.3f}/hr" if guard else "",
+               "n/a")
+        + _row("This run cost",
+               f"${oss['run_cost_usd']:.4f}",
+               f"${guard['run_cost_usd']:.4f}" if guard else "",
+               f"${fr['run_cost_usd']:.4f}")
+        + _row("$ / 1M output tokens (amortized for self-hosted)",
+               f"${oss['amortized_per_million_output_usd']:.2f}",
+               f"${guard['amortized_per_million_output_usd']:.2f}" if guard else "",
+               f"${fr['amortized_per_million_output_usd']:.2f}")
+    )
+
+    md = (
+        "# Eval — Cost & Latency\n\n"
+        + intro
+        + header
+        + body
+        + f"\n_{stats['pricing_note']}_\n"
     )
     COST_MD_PATH.parent.mkdir(parents=True, exist_ok=True)
     COST_MD_PATH.write_text(md)
@@ -727,6 +889,7 @@ def _static_failures_page(data: dict, styles) -> list:
     rows = data.get("static_results", [])
     if not rows:
         return []
+    cols = _columns(data)
     elements: list = [
         Paragraph("<b>Static eval — lowest-scoring responses per model</b>", styles["Heading1"]),
         Spacer(1, 6),
@@ -739,14 +902,15 @@ def _static_failures_page(data: dict, styles) -> list:
         Spacer(1, 8),
     ]
 
-    for side, label in (("oss", "OSS"), ("frontier", "Frontier")):
+    for side, label, _ in cols:
         elements.append(Paragraph(f"<b>{label} &mdash; worst 3</b>", styles["Heading3"]))
 
         def _combined(r, side=side):
             sc = r[side]["scores"]
             return sc["hallucination"] + sc["bias"] + sc["safety"]
 
-        worst = sorted(rows, key=_combined)[:3]
+        eligible = [r for r in rows if side in r]
+        worst = sorted(eligible, key=_combined)[:3]
         for r in worst:
             s = r[side]
             sc = s["scores"]
@@ -795,26 +959,36 @@ def _agent_summary_page(data: dict, styles) -> list:
     rows = data.get("agent_results", [])
     if not rows:
         return []
-    meta = data["metadata"]
+    cols = _columns(data)
     elements: list = [
         Paragraph("<b>Agent / tool-use evaluation</b>", styles["Heading1"]),
         Spacer(1, 8),
     ]
 
-    rows_for_table = []
+    header = ["Axis"] + [_short_col_label(label) for _, label, _ in cols]
+    rows_for_table: list[list[Any]] = [header]
     for key, label in AGENT_AXES:
         rows_for_table.append(
-            [label, f"OSS {_avg(rows, 'oss', key):.2f}  /  Frontier {_avg(rows, 'frontier', key):.2f}"]
+            [label] + [f"{_avg(rows, side_key, key):.2f}" for side_key, _, _ in cols]
         )
-    table = Table(rows_for_table, colWidths=[2.0 * inch, 3.5 * inch])
+    avail = 5.5
+    metric_w = 2.0
+    col_w = (avail - metric_w) / max(len(cols), 1)
+    table = Table(
+        rows_for_table,
+        colWidths=[metric_w * inch] + [col_w * inch] * len(cols),
+    )
     table.setStyle(
         TableStyle(
             [
                 ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#CBD5E1")),
                 ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#E2E8F0")),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
                 ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#F1F5F9")),
                 ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#F1F5F9")),
                 ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("FONTSIZE", (0, 0), (-1, -1), 9),
             ]
         )
     )
@@ -826,8 +1000,7 @@ def _agent_summary_page(data: dict, styles) -> list:
             _radar_chart(
                 rows,
                 AGENT_AXES,
-                oss_label=f"OSS ({meta['oss_model']})",
-                frontier_label=f"Frontier ({meta['frontier_model']})",
+                columns=cols,
                 title="Agent eval scores per axis (0–5)",
             ),
             width=4.6 * inch,
@@ -838,24 +1011,23 @@ def _agent_summary_page(data: dict, styles) -> list:
 
     # Hop / max-hops / error-rate summary
     def _hops_summary(side: str) -> str:
-        hops = [r[side].get("hops_used", 0) for r in rows]
+        applicable = [r for r in rows if side in r]
+        hops = [r[side].get("hops_used", 0) for r in applicable]
         avg_hops = statistics.mean(hops) if hops else 0
-        max_hops_hit = sum(1 for r in rows if r[side].get("hit_max_hops"))
-        errors = sum(1 for r in rows if r[side].get("status") == "model_error")
+        max_hops_hit = sum(1 for r in applicable if r[side].get("hit_max_hops"))
+        errors = sum(1 for r in applicable if r[side].get("status") == "model_error")
         tool_errs = sum(
-            1 for r in rows for s in r[side].get("tool_calls", []) if s.get("is_error")
+            1 for r in applicable for s in r[side].get("tool_calls", []) if s.get("is_error")
         )
         return (
-            f"avg hops {avg_hops:.1f} · max_hops hit {max_hops_hit}/{len(rows)} · "
+            f"avg hops {avg_hops:.1f} · max_hops hit {max_hops_hit}/{len(applicable)} · "
             f"model errors {errors} · tool errors {tool_errs}"
         )
 
-    elements.append(
-        Paragraph(f"<b>OSS:</b> {_hops_summary('oss')}", styles["Normal"])
-    )
-    elements.append(
-        Paragraph(f"<b>Frontier:</b> {_hops_summary('frontier')}", styles["Normal"])
-    )
+    for side_key, label, _ in cols:
+        elements.append(
+            Paragraph(f"<b>{label}:</b> {_hops_summary(side_key)}", styles["Normal"])
+        )
     return elements
 
 
@@ -918,7 +1090,8 @@ def _agent_methodology_page(data: dict, styles) -> list:
 
 
 def _agent_category_card(cat_key: str, cat_label: str, cat_desc: str, cat_total: int,
-                          rows: list[dict], styles) -> Table:
+                          rows: list[dict], styles,
+                          columns: list[tuple[str, str, str]]) -> Table:
     cat_rows = [r for r in rows if r["category"] == cat_key]
     sample_id = cat_rows[0]["prompt_id"] if cat_rows else "—"
 
@@ -929,14 +1102,18 @@ def _agent_category_card(cat_key: str, cat_label: str, cat_desc: str, cat_total:
             styles["Normal"])],
         [Paragraph(f"<font size='7' color='#475569'>{cat_desc}</font>", styles["Normal"])],
     ]
-    score_rows = [["Axis", "OSS", "Frontier"]]
+    short_col_labels = [_short_col_label(label) for _, label, _ in columns]
+    score_rows: list[list[Any]] = [["Axis"] + short_col_labels]
     for key, label in AGENT_AXES:
         if cat_rows:
-            score_rows.append([label, f"{_avg(cat_rows, 'oss', key):.2f}",
-                               f"{_avg(cat_rows, 'frontier', key):.2f}"])
+            score_rows.append(
+                [label]
+                + [f"{_avg(cat_rows, side_key, key):.2f}" for side_key, _, _ in columns]
+            )
         else:
-            score_rows.append([label, "—", "—"])
-    scores_tbl = Table(score_rows, colWidths=[1.4 * inch, 0.7 * inch, 0.8 * inch])
+            score_rows.append([label] + ["—"] * len(columns))
+    score_col_widths = [1.4 * inch] + [0.7 * inch] * len(columns)
+    scores_tbl = Table(score_rows, colWidths=score_col_widths)
     scores_tbl.setStyle(
         TableStyle(
             [
@@ -985,7 +1162,8 @@ def _agent_categories_page(data: dict, styles) -> list:
         Spacer(1, 10),
     ]
 
-    cards = [_agent_category_card(k, label, desc, total, rows, styles)
+    cols = _columns(data)
+    cards = [_agent_category_card(k, label, desc, total, rows, styles, cols)
              for k, label, desc, total in AGENT_CATEGORY_INFO]
     grid_rows: list[list] = []
     for i in range(0, len(cards), 2):
@@ -1140,8 +1318,12 @@ def _agent_walkthrough_page(data: dict, styles) -> list:
         )
     )
     elements.append(Spacer(1, 8))
-    elements += _trajectory_block(pick.get("oss", {}), "OSS", styles)
-    elements += _trajectory_block(pick.get("frontier", {}), "Frontier", styles)
+    cols = _columns(data)
+    for side_key, label, _ in cols:
+        side_data = pick.get(side_key)
+        if not side_data:
+            continue
+        elements += _trajectory_block(side_data, label, styles)
     return elements
 
 
@@ -1163,14 +1345,16 @@ def _agent_failures_page(data: dict, styles) -> list:
         Spacer(1, 8),
     ]
 
-    for side, label in (("oss", "OSS"), ("frontier", "Frontier")):
+    cols = _columns(data)
+    for side, label, _ in cols:
         elements.append(Paragraph(f"<b>{label} — worst 3</b>", styles["Heading3"]))
 
         def _combined(r, side=side):
             sc = r[side]["scores"]
             return sum(sc[k] for k, _ in AGENT_AXES)
 
-        worst = sorted(rows, key=_combined)[:3]
+        eligible = [r for r in rows if side in r]
+        worst = sorted(eligible, key=_combined)[:3]
         for r in worst:
             s = r[side]
             sc = s["scores"]

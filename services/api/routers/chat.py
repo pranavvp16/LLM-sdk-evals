@@ -17,7 +17,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import AsyncIterator, Optional
+from typing import AsyncIterator, Literal, Optional
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
@@ -36,9 +36,14 @@ from sdk import (
     get_model,
 )
 
+from services.api.config import get_settings
 from services.api.db import postgres as pg
 from services.api.deps import llm_wrapper, pg_pool, tools_registry
-from services.api.guardrails import check_input, check_output, validate_tool_args
+from services.api.guardrails import (
+    dispatch_input_check,
+    dispatch_output_check,
+    validate_tool_args,
+)
 from services.api.tools.registry import ToolRegistry, ToolUnknownError
 
 MAX_TOOL_HOPS = 5
@@ -62,6 +67,11 @@ class ChatStreamRequest(BaseModel):
     # True (or int budget) → enable reasoning; False → ask provider to disable
     # if supported; None → provider default (Anthropic off, OSS reasoning on).
     thinking: Optional[bool | int] = None
+    # Safety layer in front of (and after) the model call.
+    #   "off"        → no guardrails at all (raw model — used by the eval ablation)
+    #   "regex"      → deterministic regex / length checks (default, current behavior)
+    #   "llamaguard" → Llama Guard 3 1B served on the same Ollama endpoint
+    guardrails: Literal["off", "regex", "llamaguard"] = "regex"
 
 
 class ConversationOut(BaseModel):
@@ -224,13 +234,20 @@ async def chat_stream(
 
     async def event_generator() -> AsyncIterator[bytes]:
         cumulative_usage = {"input": 0, "output": 0, "cost_usd": 0.0}
+        settings = get_settings()
 
-        input_check = check_input(body.message)
+        input_check = await dispatch_input_check(
+            body.guardrails,
+            text=body.message,
+            wrapper=wrapper,
+            settings=settings,
+        )
         if not input_check.allowed:
             refusal = "This request was blocked by guardrails."
             yield _sse({
                 "type": "guardrail_block",
                 "stage": "input",
+                "source": body.guardrails,
                 "reason": input_check.reason,
             })
             await pg.add_message(
@@ -285,11 +302,18 @@ async def chat_stream(
 
                 output_blocked = False
                 if hop_text:
-                    out_check = check_output(hop_text)
+                    out_check = await dispatch_output_check(
+                        body.guardrails,
+                        user_text=body.message,
+                        assistant_text=hop_text,
+                        wrapper=wrapper,
+                        settings=settings,
+                    )
                     if not out_check.allowed:
                         yield _sse({
                             "type": "guardrail_block",
                             "stage": "output",
+                            "source": body.guardrails,
                             "reason": out_check.reason,
                         })
                         hop_text = "This response was blocked by guardrails."

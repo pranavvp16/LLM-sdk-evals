@@ -74,6 +74,10 @@ class Settings(BaseSettings):
     ollama_base_url: str = ""
     ollama_api_key: str = "ollama"
     ollama_model: str = "qwen2.5:1.5b"
+    # Llama Guard 3 1B served alongside the chat model on the same Ollama
+    # endpoint. Used as an input + output safety filter when a chat request
+    # sets `guardrails="llamaguard"` (and by the 3-column ablation eval).
+    ollama_guard_model: str = "llama-guard3:1b"
     oss_provider: str = ""
     oss_model: str = ""
 

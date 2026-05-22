@@ -109,6 +109,7 @@ write_files:
       OLLAMA_BASE_URL=http://ollama:11434/v1
       OLLAMA_API_KEY=$OLLIVE_OLLAMA_API_KEY
       OLLAMA_MODEL=qwen2.5:1.5b
+      OLLAMA_GUARD_MODEL=llama-guard3:1b
       OSS_PROVIDER=ollama
       OSS_MODEL=qwen2.5:1.5b
       ENVEOF
