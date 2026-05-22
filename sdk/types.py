@@ -26,7 +26,7 @@ class ApiProtocol(str, Enum):
     """
     OPENAI_COMPLETIONS  = "openai-completions"   # OpenAI, Groq, Together, Ollama, vLLM, etc.
     ANTHROPIC_MESSAGES  = "anthropic-messages"   # Anthropic Claude (native SDK)
-    GOOGLE_GENERATIVE   = "google-generative-ai" # Gemini via google-generativeai SDK
+    GOOGLE_GENERATIVE   = "google-generative-ai" # Gemini via google-genai SDK
     OPENAI_RESPONSES    = "openai-responses"     # OpenAI Responses API (o1/o3)
 
 
