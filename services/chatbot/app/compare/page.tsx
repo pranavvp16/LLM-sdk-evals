@@ -34,7 +34,7 @@ const MODEL_OPTIONS: ModelOption[] = [
   { provider: "opencode", model: "kimi-k2.5", label: "Kimi K2.5 (OpenCode Zen)" },
   { provider: "openai", model: "gpt-4o-mini", label: "GPT-4o mini (OpenAI)" },
   { provider: "google", model: "gemini-2.5-flash", label: "Gemini 2.5 Flash (Google)" },
-  { provider: "vllm", model: "qwen2.5-0.5b-instruct", label: "Qwen 0.5B (vLLM)" },
+  { provider: "ollama", model: "qwen2.5:1.5b", label: "Qwen 1.5B (Ollama, self-hosted)" },
   { provider: "huggingface", model: "qwen2.5-0.5b-instruct", label: "Qwen 0.5B (HF)" },
   { provider: "anthropic", model: "claude-sonnet-4-6", label: "Sonnet 4.6 (frontier)" },
   { provider: "anthropic", model: "claude-haiku-4-5-20251001", label: "Haiku 4.5" },

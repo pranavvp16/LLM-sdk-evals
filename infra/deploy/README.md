@@ -1,12 +1,15 @@
 # Single-VM public deployment
 
 Deploys the whole stack — FastAPI, Next.js chatbot, Postgres, ClickHouse,
-Redis, Prometheus, Grafana — on one Azure VM, behind one Caddy HTTPS endpoint.
+Redis, Prometheus, Grafana, **and a self-hosted Ollama OSS endpoint** — on
+one Azure VM, behind one Caddy HTTPS endpoint.
 
-OSS inference is served by **OpenCode-Go** (hosted) because the Azure
-subscription has no GPU quota; the on-VM stack stays CPU-only. The provider
-swap is transparent: the same `LLMWrapper` interface drives both OSS and
-frontier comparisons.
+OSS inference runs locally on the VM via **Ollama** serving
+`qwen2.5:1.5b` (Q4_K_M, ~1 GB), exposed publicly at `https://<host>/v1/*`
+behind a bearer-token gate. OpenCode-Go stays available as an optional
+secondary provider when `OPENCODE_API_KEY` is supplied. The CPU VM
+(`Standard_E8s_v5`, 8 vCPU / 64 GB / no GPU) is the right shape for a
+quantized 1.5B model — expect 8–15 tok/s.
 
 ## Topology
 
@@ -15,9 +18,11 @@ frontier comparisons.
  Internet ──443──► caddy  ── TLS termination ──────────────────┤
                  │   ├─ /api/*      → api:8000                  │
                  │   ├─ /grafana/*  → grafana:3000              │
+                 │   ├─ /v1/*       → ollama:11434 (bearer)     │
                  │   ├─ /health     → api:8000/health           │
                  │   └─ /           → chatbot:3000              │
                  │                                              │
+                 │  ollama (qwen2.5:1.5b) on docker network     │
                  │  postgres / clickhouse / redis / prometheus  │
                  │  bound to 127.0.0.1 only (defense in depth)  │
                  └──────────────────────────────────────────────┘
@@ -41,8 +46,9 @@ shape.
 az login
 gh auth login                                # for CI secrets
 export ANTHROPIC_API_KEY=sk-ant-...
+# optional — OpenCode-Go as a secondary OSS provider
 export OPENCODE_API_KEY=oc-...
-# optional
+# optional — HF inference as a static-eval fallback
 export HUGGINGFACE_API_KEY=hf-...
 ```
 
@@ -53,8 +59,13 @@ From the repo root:
 ```bash
 ./infra/deploy/deploy.sh \
     --anthropic-key "$ANTHROPIC_API_KEY" \
-    --opencode-key  "$OPENCODE_API_KEY"
+    [--opencode-key  "$OPENCODE_API_KEY"]   # optional
+    [--ollama-api-key "$(openssl rand -hex 32)"]   # auto-generated if omitted
 ```
+
+`--ollama-api-key` is the bearer Caddy enforces on the public `/v1/*` path.
+Skip it and the script generates one; it ends up in
+`/opt/ollive/credentials.txt` on the VM.
 
 The script:
 
@@ -67,7 +78,8 @@ The script:
    - Clones the repo, writes `.env`, brings the stack up
 5. Opens NSG ports 80, 443.
 
-First boot takes ~5–10 min. Watch:
+First boot takes ~5–10 min, plus ~60s on top while Ollama pulls
+`qwen2.5:1.5b` (~1 GB) into its model cache. Watch:
 
 ```bash
 ssh azureuser@<public-ip> 'sudo tail -f /var/log/cloud-init-output.log'
@@ -115,8 +127,11 @@ Once those are set, push to `main` triggers a full build + rollout in
 
 ```bash
 HOST=<fqdn-from-deploy.sh>
+BEARER=$(ssh azureuser@<public-ip> 'sudo grep "Ollama /v1 bearer" /opt/ollive/credentials.txt | awk "{print \$NF}"')
 
-curl https://$HOST/health        # → {"status":"ok"}
+curl https://$HOST/health                                   # → {"status":"ok"}
+curl -H "Authorization: Bearer $BEARER" https://$HOST/v1/models   # lists qwen2.5:1.5b
+curl https://$HOST/v1/models                                # → 401 (bearer enforced)
 open https://$HOST/              # Next.js chatbot
 open https://$HOST/grafana/      # dashboards
 ```
@@ -137,16 +152,22 @@ docker compose -f docker-compose.yml -f infra/deploy/docker-compose.prod.yml \
 
 ## Run the eval against the public endpoint
 
-OpenCode-Go is the OSS provider in this deployment, so the eval doesn't
-need to point at the VM for inference — it talks to OpenCode directly.
-The dashboards and chat UI are what live on the VM.
+OSS inference runs on the VM. Point the eval at the public `/v1` endpoint:
 
 ```bash
-export OPENCODE_API_KEY=...
 export ANTHROPIC_API_KEY=...
-python eval/run_eval.py
-python eval/report.py        # writes docs/eval_report.pdf + docs/eval_cost_latency.md
+export OSS_PROVIDER=ollama
+export OSS_MODEL=qwen2.5:1.5b
+export OLLAMA_BASE_URL=https://<fqdn>/v1
+export OLLAMA_API_KEY=<bearer from credentials.txt>
+
+python eval/run_eval.py --all --limit 3   # smoke
+python eval/run_eval.py                   # full
+python eval/report.py                     # writes docs/eval_report.pdf + docs/eval_cost_latency.md
 ```
+
+The same eval can also run inside the VM against `http://ollama:11434/v1`
+without the bearer if you'd rather skip the public round-trip.
 
 ## Tear down
 

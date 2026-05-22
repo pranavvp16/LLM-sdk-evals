@@ -25,6 +25,8 @@ services:
       - "443:443"
     environment:
       PUBLIC_HOSTNAME: ${PUBLIC_HOSTNAME}
+      # Bearer the Caddyfile checks on /v1/*; cloud-init generates this.
+      OLLAMA_API_KEY: ${OLLAMA_API_KEY}
     volumes:
       - ./infra/deploy/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
@@ -32,6 +34,36 @@ services:
     depends_on:
       api:
         condition: service_healthy
+
+  # Self-hosted OSS endpoint. Qwen2.5-1.5B in Q4_K_M (~1 GB) is small enough
+  # to run on the CPU VM and still produce native tool calls through Ollama's
+  # OpenAI-compat /v1 shim. Caddy reaches it over the docker network; the
+  # /v1/* route is bearer-gated for the public endpoint.
+  ollama:
+    image: ollama/ollama:0.4.7
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      OLLAMA_KEEP_ALIVE: "24h"
+      OLLAMA_NUM_PARALLEL: "1"
+      OLLAMA_MAX_LOADED_MODELS: "1"
+    volumes:
+      - ollama_models:/root/.ollama
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        ollama serve &
+        pid=$$!
+        until ollama list >/dev/null 2>&1; do sleep 1; done
+        ollama pull "$${OLLAMA_MODEL:-qwen2.5:1.5b}"
+        wait $$pid
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list 2>/dev/null | grep -q qwen2.5"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
 
   api:
     command: >
@@ -46,6 +78,9 @@ services:
       EVAL_COST_MD_PATH: /app/var/eval/eval_cost_latency.md
     volumes:
       - eval_artifacts:/app/var/eval
+    depends_on:
+      ollama:
+        condition: service_healthy
 
   chatbot:
     build:
@@ -85,3 +120,4 @@ volumes:
   caddy_data:
   caddy_config:
   eval_artifacts:
+  ollama_models:
