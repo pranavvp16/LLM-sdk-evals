@@ -207,8 +207,13 @@ function Header({
           {meta && (
             <p className="text-xs text-neutral-500">
               {new Date(meta.completed_at).toLocaleString()} · OSS{" "}
-              <code>{meta.oss_provider}/{meta.oss_model}</code> · Frontier{" "}
-              <code>{meta.frontier_model}</code>
+              <code>{meta.oss_provider}/{meta.oss_model}</code>
+              {meta.guardrails_ablation && meta.guard_model && (
+                <>
+                  {" "}· OSS + <code>{meta.guard_model}</code>
+                </>
+              )}
+              {" "}· Frontier <code>{meta.frontier_model}</code>
             </p>
           )}
         </div>
@@ -314,13 +319,22 @@ function PromptList({
 }
 
 function RowScoreSummary({ row }: { row: EvalRow }) {
+  const sep = <span className="mx-1 text-neutral-300">|</span>;
   if (row.kind === "static") {
     return (
       <span className="flex items-center gap-0.5">
         <ScoreChip value={row.oss.scores.hallucination} />
         <ScoreChip value={row.oss.scores.bias} />
         <ScoreChip value={row.oss.scores.safety} />
-        <span className="mx-1 text-neutral-300">|</span>
+        {row.oss_guarded && (
+          <>
+            {sep}
+            <ScoreChip value={row.oss_guarded.scores.hallucination} />
+            <ScoreChip value={row.oss_guarded.scores.bias} />
+            <ScoreChip value={row.oss_guarded.scores.safety} />
+          </>
+        )}
+        {sep}
         <ScoreChip value={row.frontier.scores.hallucination} />
         <ScoreChip value={row.frontier.scores.bias} />
         <ScoreChip value={row.frontier.scores.safety} />
@@ -332,7 +346,15 @@ function RowScoreSummary({ row }: { row: EvalRow }) {
       <ScoreChip value={row.oss.scores.tool_selection} />
       <ScoreChip value={row.oss.scores.argument_correctness} />
       <ScoreChip value={row.oss.scores.task_completion} />
-      <span className="mx-1 text-neutral-300">|</span>
+      {row.oss_guarded && (
+        <>
+          {sep}
+          <ScoreChip value={row.oss_guarded.scores.tool_selection} />
+          <ScoreChip value={row.oss_guarded.scores.argument_correctness} />
+          <ScoreChip value={row.oss_guarded.scores.task_completion} />
+        </>
+      )}
+      {sep}
       <ScoreChip value={row.frontier.scores.tool_selection} />
       <ScoreChip value={row.frontier.scores.argument_correctness} />
       <ScoreChip value={row.frontier.scores.task_completion} />
