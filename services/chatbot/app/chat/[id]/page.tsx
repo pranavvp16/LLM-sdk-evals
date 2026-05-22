@@ -132,7 +132,11 @@ export default function ChatPage({ params }: PageProps) {
 
   async function onCancel() {
     if (abortRef.current) abortRef.current.abort();
-    if (!isNew && conversationId) {
+    // history.replaceState (used after the first turn on /chat/new) doesn't
+    // update params.id, so `isNew` stays true even once we have a real
+    // conversationId. Gate on conversationId alone to keep server-side
+    // cancel working for conversations started from /chat/new.
+    if (conversationId) {
       await cancelConversation(conversationId);
     }
     router.push("/");
