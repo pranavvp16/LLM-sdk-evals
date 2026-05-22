@@ -285,6 +285,36 @@ def to_anthropic_tools(tools: list[dict]) -> list[dict]:
     ]
 
 
+# Keys allowed in Google's Schema (OpenAPI subset used by function_declarations).
+# JSON-Schema constraints like minimum/maximum/minLength/pattern are rejected
+# with "Unknown field for Schema: <key>", so we strip them recursively.
+_GOOGLE_SCHEMA_KEYS = frozenset({
+    "type", "format", "description", "nullable", "enum",
+    "properties", "required", "items", "default", "example",
+    "anyOf", "title",
+})
+
+
+def _sanitize_google_schema(node: Any) -> Any:
+    if isinstance(node, dict):
+        cleaned: dict = {}
+        for k, v in node.items():
+            if k not in _GOOGLE_SCHEMA_KEYS:
+                continue
+            if k in ("properties",) and isinstance(v, dict):
+                cleaned[k] = {pk: _sanitize_google_schema(pv) for pk, pv in v.items()}
+            elif k in ("items", "default", "example"):
+                cleaned[k] = _sanitize_google_schema(v) if isinstance(v, (dict, list)) else v
+            elif k == "anyOf" and isinstance(v, list):
+                cleaned[k] = [_sanitize_google_schema(x) for x in v]
+            else:
+                cleaned[k] = v
+        return cleaned
+    if isinstance(node, list):
+        return [_sanitize_google_schema(x) for x in node]
+    return node
+
+
 def to_google_tools(tools: list[dict]) -> list[dict]:
     """Google uses function declarations."""
     return [
@@ -293,7 +323,9 @@ def to_google_tools(tools: list[dict]) -> list[dict]:
                 {
                     "name": t["name"],
                     "description": t.get("description", ""),
-                    "parameters": t.get("parameters", {"type": "object", "properties": {}}),
+                    "parameters": _sanitize_google_schema(
+                        t.get("parameters", {"type": "object", "properties": {}})
+                    ),
                 }
             ]
         }

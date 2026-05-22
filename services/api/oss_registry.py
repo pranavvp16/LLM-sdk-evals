@@ -75,4 +75,18 @@ def register_oss_models() -> None:
             supports_reasoning=True,
         )
     )
+    # gemini-2.5-flash — the previously-registered gemini-2.0-flash has
+    # 0 free-tier quota on the deployment key; 2.5-flash still serves.
+    register_model(
+        ModelDef(
+            id="gemini-2.5-flash",
+            provider="google",
+            api=ApiProtocol.GOOGLE_GENERATIVE,
+            context_window=1_048_576,
+            max_tokens=8_192,
+            cost=ModelCost(input=0.30, output=2.50),
+            supports_vision=True,
+            supports_tools=True,
+        )
+    )
     _REGISTERED = True

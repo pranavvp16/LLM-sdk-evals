@@ -14,9 +14,12 @@ const PROVIDERS: { provider: string; model: string; label: string }[] = [
   { provider: "anthropic", model: "claude-sonnet-4-6", label: "Sonnet 4.6 (frontier)" },
   { provider: "anthropic", model: "claude-haiku-4-5-20251001", label: "Haiku 4.5 (cheap)" },
   { provider: "anthropic", model: "claude-opus-4-7", label: "Opus 4.7" },
-  { provider: "vllm", model: "qwen2.5-0.5b-instruct", label: "Qwen 0.5B (vLLM)" },
-  { provider: "opencode", model: "kimi-k2.5", label: "Kimi K2.5 (OpenCode Zen)" },
+  { provider: "openai", model: "gpt-4o-mini", label: "GPT-4o mini (OpenAI)" },
+  { provider: "google", model: "gemini-2.5-flash", label: "Gemini 2.5 Flash (Google)" },
+  { provider: "opencode-go", model: "deepseek-v4-flash", label: "DeepSeek v4 Flash (OpenCode Go)" },
   { provider: "opencode-go", model: "glm-5", label: "GLM-5 (OpenCode Go)" },
+  { provider: "opencode", model: "kimi-k2.5", label: "Kimi K2.5 (OpenCode Zen)" },
+  { provider: "vllm", model: "qwen2.5-0.5b-instruct", label: "Qwen 0.5B (vLLM)" },
   { provider: "huggingface", model: "qwen2.5-0.5b-instruct", label: "Qwen 0.5B (HF fallback)" },
 ];
 
