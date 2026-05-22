@@ -286,12 +286,13 @@ def to_anthropic_tools(tools: list[dict]) -> list[dict]:
 
 
 # Keys allowed in Google's Schema (OpenAPI subset used by function_declarations).
-# JSON-Schema constraints like minimum/maximum/minLength/pattern are rejected
-# with "Unknown field for Schema: <key>", so we strip them recursively.
+# JSON-Schema constraints like minimum/maximum/default/pattern/minLength are
+# rejected with "Unknown field for Schema: <key>", so we strip them.
+# Reference: ai.google.dev/api/rest/v1beta/cachedContents#Schema
 _GOOGLE_SCHEMA_KEYS = frozenset({
     "type", "format", "description", "nullable", "enum",
-    "properties", "required", "items", "default", "example",
-    "anyOf", "title",
+    "properties", "required", "items", "anyOf",
+    "minItems", "maxItems", "propertyOrdering",
 })
 
 
@@ -301,9 +302,9 @@ def _sanitize_google_schema(node: Any) -> Any:
         for k, v in node.items():
             if k not in _GOOGLE_SCHEMA_KEYS:
                 continue
-            if k in ("properties",) and isinstance(v, dict):
+            if k == "properties" and isinstance(v, dict):
                 cleaned[k] = {pk: _sanitize_google_schema(pv) for pk, pv in v.items()}
-            elif k in ("items", "default", "example"):
+            elif k == "items":
                 cleaned[k] = _sanitize_google_schema(v) if isinstance(v, (dict, list)) else v
             elif k == "anyOf" and isinstance(v, list):
                 cleaned[k] = [_sanitize_google_schema(x) for x in v]
