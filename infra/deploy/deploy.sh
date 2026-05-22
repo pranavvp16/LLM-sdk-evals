@@ -5,8 +5,9 @@
 # Usage:
 #   ./infra/deploy/deploy.sh \
 #       --anthropic-key   <sk-ant-...> \
-#       --opencode-key    <oc_...>           # OSS provider (OpenCode-Go) \
+#       [--opencode-key   <oc_...>]          # secondary OSS path (OpenCode-Go) \
 #       [--hf-token       <hf-...>] \
+#       [--ollama-api-key <hex>]             # bearer for public /v1/*; auto-generated if omitted \
 #       [--ci-ssh-pubkey  <path-to-pubkey>]  # auto-generated if omitted \
 #       [--acr-name       <ollivacrXXXX>]    # auto-generated if omitted \
 #       [--repo-url       <https://github.com/you/repo>] \
@@ -31,6 +32,7 @@ SSH_SOURCE_DEFAULT="*"
 ANTHROPIC_KEY=""
 OPENCODE_KEY=""
 HF_TOKEN=""
+OLLAMA_API_KEY_VAL=""
 GH_TOKEN_VAL=""
 CI_SSH_PUBKEY_PATH=""
 ACR_NAME=""
@@ -47,6 +49,7 @@ while [[ $# -gt 0 ]]; do
     --anthropic-key)   ANTHROPIC_KEY="$2"; shift 2 ;;
     --opencode-key)    OPENCODE_KEY="$2"; shift 2 ;;
     --hf-token)        HF_TOKEN="$2"; shift 2 ;;
+    --ollama-api-key)  OLLAMA_API_KEY_VAL="$2"; shift 2 ;;
     --gh-token)        GH_TOKEN_VAL="$2"; shift 2 ;;
     --ci-ssh-pubkey)   CI_SSH_PUBKEY_PATH="$2"; shift 2 ;;
     --acr-name)        ACR_NAME="$2"; shift 2 ;;
@@ -65,7 +68,12 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ -z "$ANTHROPIC_KEY" ]] && { echo "error: --anthropic-key is required" >&2; exit 1; }
-[[ -z "$OPENCODE_KEY"  ]] && { echo "warning: --opencode-key not given; OSS chat/eval will not work until you set OPENCODE_API_KEY in .env on the VM" >&2; }
+[[ -z "$OPENCODE_KEY"  ]] && { echo "warning: --opencode-key not given; OpenCode-Go path disabled. OSS will default to the on-VM ollama endpoint." >&2; }
+# Auto-generate the bearer token Caddy enforces on /v1/* if one wasn't provided.
+if [[ -z "$OLLAMA_API_KEY_VAL" ]]; then
+  OLLAMA_API_KEY_VAL=$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | xxd -p -c 32)
+  echo "info: generated OLLAMA_API_KEY for the public /v1/* endpoint"
+fi
 # Auto-pick up gh auth token if not provided and gh is logged in (needed for private repos)
 if [[ -z "$GH_TOKEN_VAL" ]] && command -v gh >/dev/null 2>&1; then
   GH_TOKEN_VAL=$(gh auth token 2>/dev/null || true)
@@ -123,6 +131,7 @@ trap 'rm -f "$TMP_CLOUD_INIT" "$TMP_SUBS"' EXIT
   printf '%s\0%s\0' "__ANTHROPIC_API_KEY__" "$ANTHROPIC_KEY"
   printf '%s\0%s\0' "__HF_TOKEN__"         "$HF_TOKEN"
   printf '%s\0%s\0' "__OPENCODE_API_KEY__" "$OPENCODE_KEY"
+  printf '%s\0%s\0' "__OLLAMA_API_KEY__"   "$OLLAMA_API_KEY_VAL"
   printf '%s\0%s\0' "__GH_TOKEN__"         "$GH_TOKEN_VAL"
   printf '%s\0%s\0' "__ACR_LOGIN_SERVER__" "$ACR_LOGIN_SERVER"
   printf '%s\0%s\0' "__ACR_USERNAME__"     "$ACR_USERNAME"

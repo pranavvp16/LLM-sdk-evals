@@ -59,7 +59,7 @@ class Settings(BaseSettings):
     groq_api_key: str = ""
     deepseek_api_key: str = ""
 
-    # ── OSS backends (vLLM, OpenCode Go, HF fallback) ─────────────────────
+    # ── OSS backends (Ollama, vLLM, OpenCode Go, HF fallback) ─────────────
     vllm_base_url: str = ""
     vllm_api_key: str = "EMPTY"
     vllm_model: str = "qwen2.5-1.5b-instruct"
@@ -68,6 +68,12 @@ class Settings(BaseSettings):
     opencode_zen_model: str = "kimi-k2.5"
     opencode_go_base_url: str = "https://opencode.ai/zen/go/v1"
     opencode_go_model: str = "deepseek-v4-flash"
+    # Ollama: self-hosted OSS endpoint deployed alongside the API on the
+    # prod VM. Local dev leaves OLLAMA_BASE_URL empty; prod sets it to
+    # http://ollama:11434/v1 via cloud-init.
+    ollama_base_url: str = ""
+    ollama_api_key: str = "ollama"
+    ollama_model: str = "qwen2.5:1.5b"
     oss_provider: str = ""
     oss_model: str = ""
 
@@ -87,6 +93,8 @@ class Settings(BaseSettings):
             # pi-ai: one OPENCODE_API_KEY for both Zen and Go provider ids
             keys["opencode"] = self.opencode_api_key
             keys["opencode-go"] = self.opencode_api_key
+        if self.ollama_base_url:
+            keys["ollama"] = self.ollama_api_key or "ollama"
         return {k: v for k, v in keys.items() if v}
 
     def base_urls(self) -> dict[str, str]:
@@ -99,10 +107,12 @@ class Settings(BaseSettings):
                 urls["opencode"] = self.opencode_zen_base_url.rstrip("/")
             if self.opencode_go_base_url:
                 urls["opencode-go"] = self.opencode_go_base_url.rstrip("/")
+        if self.ollama_base_url:
+            urls["ollama"] = self.ollama_base_url.rstrip("/")
         return urls
 
     _OSS_PROVIDERS: ClassVar[frozenset[str]] = frozenset(
-        {"vllm", "opencode", "opencode-go", "huggingface"}
+        {"vllm", "opencode", "opencode-go", "huggingface", "ollama"}
     )
 
     def _require_oss_config(self, provider: str) -> None:
@@ -119,6 +129,11 @@ class Settings(BaseSettings):
             raise ValueError(
                 "OSS eval via huggingface requires HUGGINGFACE_API_KEY"
             )
+        if provider == "ollama" and not self.ollama_base_url:
+            raise ValueError(
+                "OSS_PROVIDER=ollama requires OLLAMA_BASE_URL "
+                "(prod: http://ollama:11434/v1; local: http://localhost:11434/v1)"
+            )
 
     def resolve_oss(self) -> tuple[str, str]:
         """Return (provider, model_id) for the OSS side of the eval.
@@ -133,6 +148,7 @@ class Settings(BaseSettings):
             "opencode": self.opencode_zen_model,
             "opencode-go": self.opencode_go_model,
             "huggingface": "qwen2.5-0.5b-instruct",
+            "ollama": self.ollama_model,
         }
         if self.oss_provider:
             provider = self.oss_provider.strip()

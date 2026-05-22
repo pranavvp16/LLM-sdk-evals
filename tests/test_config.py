@@ -25,6 +25,7 @@ _BLANK = {
     "openai_api_key": "",
     "google_api_key": "",
     "vllm_base_url": "",
+    "ollama_base_url": "",
     "oss_provider": "",
     "oss_model": "",
 }
@@ -56,7 +57,7 @@ def test_resolve_oss_vllm_with_url_ok():
         vllm_base_url="http://localhost:8001/v1",
         huggingface_api_key="hf",
     )
-    assert s.resolve_oss() == ("vllm", "qwen2.5-0.5b-instruct")
+    assert s.resolve_oss() == ("vllm", "qwen2.5-1.5b-instruct")
 
 
 def test_resolve_oss_opencode_without_key_raises():
@@ -108,3 +109,29 @@ def test_oss_registry_opencode_go_deepseek():
     assert m.provider == "opencode-go"
     assert m.supports_tools is True
     assert m.supports_reasoning is True
+
+
+def test_resolve_oss_ollama_without_url_raises():
+    s = _settings(oss_provider="ollama", huggingface_api_key="hf")
+    with pytest.raises(ValueError, match="OLLAMA_BASE_URL"):
+        s.resolve_oss()
+
+
+def test_resolve_oss_ollama_with_url_ok():
+    s = _settings(
+        oss_provider="ollama",
+        ollama_base_url="http://ollama:11434/v1",
+    )
+    assert s.resolve_oss() == ("ollama", "qwen2.5:1.5b")
+
+
+def test_base_urls_includes_ollama_when_set():
+    s = _settings(ollama_base_url="http://ollama:11434/v1")
+    urls = s.base_urls()
+    assert urls["ollama"] == "http://ollama:11434/v1"
+
+
+def test_oss_registry_ollama_qwen():
+    m = get_model("ollama", "qwen2.5:1.5b")
+    assert m.provider == "ollama"
+    assert m.supports_tools is True

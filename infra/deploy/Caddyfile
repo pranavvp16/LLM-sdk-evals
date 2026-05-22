@@ -24,6 +24,18 @@
         reverse_proxy api:8000
     }
 
+    # ── OSS endpoint (Ollama, OpenAI-compat) ─────────────────────────────
+    # Bearer-gated so the public /v1/* path is not an open inference proxy.
+    # Local Ollama ignores the key; Caddy is the only auth layer here.
+    @oss path /v1/*
+    handle @oss {
+        @authed header Authorization "Bearer {$OLLAMA_API_KEY}"
+        handle @authed {
+            reverse_proxy ollama:11434
+        }
+        respond 401
+    }
+
     # ── Everything else → Next.js chatbot ────────────────────────────────
     handle {
         reverse_proxy chatbot:3000

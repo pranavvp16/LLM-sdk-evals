@@ -1,23 +1,19 @@
 """Cost constants for the OSS provider used in the eval.
 
-This deployment runs the app stack on a CPU-only Azure VM and uses OpenCode-Go
-(hosted) for OSS inference, because the Azure subscription has no GPU quota.
-The amortized-per-VM-hour figure therefore doesn't apply — OpenCode bills
-per token, and the eval report falls back to the per-call cost the SDK
-records (which is currently $0 since OpenCode-Go's `ModelCost` is unpriced
-in `sdk/registry.py`).
-
-If you later self-host an OSS model (e.g. swap to a GPU VM and run vLLM),
-set `OSS_SELF_HOSTED = True` and refresh the SKU + hourly figures — the
-eval report will recompute amortized $/1M output.
+OSS inference runs on the same Azure VM that hosts the rest of the stack,
+via Ollama serving `qwen2.5:1.5b` (Q4_K_M, ~1 GB). Because the model is
+self-hosted, per-call `ModelCost` in the SDK registry is zero and the
+real cost is the amortized VM hour, computed from these constants by
+`eval/report.py`.
 """
 
 from __future__ import annotations
 
-OSS_SELF_HOSTED: bool = False
-OSS_HARDWARE_COST_PER_HOUR_USD: float = 0.75    # Standard_L8aos_v4 on-demand
-OSS_SKU: str = "Standard_L8aos_v4 (CPU only — vLLM not running)"
+OSS_SELF_HOSTED: bool = True
+OSS_HARDWARE_COST_PER_HOUR_USD: float = 0.504   # Standard_E8s_v5 on-demand, eastus
+OSS_SKU: str = "Standard_E8s_v5 (8 vCPU / 64 GB, CPU only)"
 OSS_PRICING_NOTE: str = (
-    "Deployment is CPU-only; OSS inference uses hosted OpenCode-Go. "
-    "Per-token cost is taken from OpenCode pricing when populated in the SDK registry."
+    "OSS endpoint is Ollama serving qwen2.5:1.5b (Q4_K_M) on the same VM "
+    "as the rest of the stack. Per-call cost is $0; amortized $/1M output "
+    "tokens is hardware-hours × $0.504 / total OSS output tokens × 1e6."
 )

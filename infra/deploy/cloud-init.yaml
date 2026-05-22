@@ -26,6 +26,7 @@ write_files:
       OLLIVE_ANTHROPIC_API_KEY=__ANTHROPIC_API_KEY__
       OLLIVE_HF_TOKEN=__HF_TOKEN__
       OLLIVE_OPENCODE_API_KEY=__OPENCODE_API_KEY__
+      OLLIVE_OLLAMA_API_KEY=__OLLAMA_API_KEY__
       OLLIVE_GH_TOKEN=__GH_TOKEN__
       OLLIVE_ACR_LOGIN_SERVER=__ACR_LOGIN_SERVER__
       OLLIVE_ACR_USERNAME=__ACR_USERNAME__
@@ -102,12 +103,21 @@ write_files:
       NEXT_PUBLIC_API_URL=https://$OLLIVE_PUBLIC_HOSTNAME/api
       ACR_LOGIN_SERVER=$OLLIVE_ACR_LOGIN_SERVER
       IMAGE_TAG=$OLLIVE_IMAGE_TAG
+      # Self-hosted OSS endpoint (Ollama). The api container reaches it on
+      # the docker network; Caddy gates the public /v1/* path with the same
+      # bearer. OSS_PROVIDER pins the eval to Ollama in prod.
+      OLLAMA_BASE_URL=http://ollama:11434/v1
+      OLLAMA_API_KEY=$OLLIVE_OLLAMA_API_KEY
+      OLLAMA_MODEL=qwen2.5:1.5b
+      OSS_PROVIDER=ollama
+      OSS_MODEL=qwen2.5:1.5b
       ENVEOF
 
       cat > /opt/ollive/credentials.txt <<CREDEOF
       Public URL:        https://$OLLIVE_PUBLIC_HOSTNAME
       Grafana admin pw:  $GRAFANA_PASSWORD
       ACR registry:      $OLLIVE_ACR_LOGIN_SERVER
+      Ollama /v1 bearer: $OLLIVE_OLLAMA_API_KEY
       CREDEOF
       chmod 600 /opt/ollive/credentials.txt
 

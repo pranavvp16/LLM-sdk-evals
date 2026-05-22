@@ -75,6 +75,21 @@ def register_oss_models() -> None:
             supports_reasoning=True,
         )
     )
+    # Self-hosted OSS endpoint on the prod VM. The colon-form id must match
+    # OLLAMA_MODEL exactly — Ollama uses that string both as the pull tag
+    # and the OpenAI-compat /v1/chat/completions model name. Qwen2.5
+    # instruct ships native tool calling via Ollama's OpenAI shim.
+    register_model(
+        ModelDef(
+            id="qwen2.5:1.5b",
+            provider="ollama",
+            api=ApiProtocol.OPENAI_COMPLETIONS,
+            context_window=32_768,
+            max_tokens=2_048,
+            cost=ModelCost(),
+            supports_tools=True,
+        )
+    )
     # gemini-2.5-flash — the previously-registered gemini-2.0-flash has
     # 0 free-tier quota on the deployment key; 2.5-flash still serves.
     register_model(
