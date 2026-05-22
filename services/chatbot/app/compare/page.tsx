@@ -4,8 +4,17 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useRef, useState } from "react";
 
+import { TurnView } from "../../components/chat/TurnView";
 import { EvalBrowser } from "../../components/eval/EvalBrowser";
 import { streamChat } from "../../lib/api";
+import {
+  addToolCall,
+  appendText,
+  appendThinking,
+  attachToolResult,
+  finalizeLastAssistant,
+  type Turn,
+} from "../../lib/turns";
 
 type View = "live" | "benchmark";
 
@@ -45,8 +54,8 @@ const DEFAULT_RIGHT = findModel("anthropic", "claude-sonnet-4-6");
 
 interface ColumnState {
   pick: ModelOption;
-  text: string;
-  thinking: string;
+  conversationId: string | null;
+  turns: Turn[];
   usage: { input: number; output: number; cost_usd: number } | null;
   latencyMs: number | null;
   error: string | null;
@@ -55,8 +64,8 @@ interface ColumnState {
 
 const initial = (pick: ModelOption): ColumnState => ({
   pick,
-  text: "",
-  thinking: "",
+  conversationId: null,
+  turns: [],
   usage: null,
   latencyMs: null,
   error: null,
@@ -127,43 +136,94 @@ function LiveCompare() {
   const [right, setRight] = useState<ColumnState>(initial(DEFAULT_RIGHT));
   const abortRef = useRef<AbortController | null>(null);
 
-  function setSide(side: "left" | "right", patch: Partial<ColumnState>) {
+  function patchSide(side: "left" | "right", patch: (s: ColumnState) => ColumnState) {
     const setter = side === "left" ? setLeft : setRight;
-    setter((s) => ({ ...s, ...patch }));
+    setter(patch);
   }
 
-  async function runOne(side: "left" | "right", pick: ModelOption, text: string, signal: AbortSignal) {
-    setSide(side, { text: "", thinking: "", usage: null, latencyMs: null, error: null, busy: true });
+  async function runOne(
+    side: "left" | "right",
+    state: ColumnState,
+    text: string,
+    useThinking: boolean,
+    signal: AbortSignal,
+  ) {
+    // Seed user turn + pending assistant turn, clear per-turn footer state.
+    patchSide(side, (s) => ({
+      ...s,
+      turns: [
+        ...s.turns,
+        { kind: "user", content: text },
+        { kind: "assistant", content: "", pending: true },
+      ],
+      usage: null,
+      latencyMs: null,
+      error: null,
+      busy: true,
+    }));
     const t0 = performance.now();
-    let acc = "";
-    let thinkingAcc = "";
     try {
       for await (const chunk of streamChat(
         {
+          conversation_id: state.conversationId ?? undefined,
           message: text,
-          provider: pick.provider,
-          model: pick.model,
-          thinking,
+          provider: state.pick.provider,
+          model: state.pick.model,
+          thinking: useThinking,
         },
         signal,
       )) {
-        if (chunk.type === "text_delta") {
-          acc += chunk.delta;
-          setSide(side, { text: acc });
+        if (chunk.type === "meta") {
+          const cid = chunk.conversation_id;
+          if (cid) {
+            patchSide(side, (s) => (s.conversationId ? s : { ...s, conversationId: cid }));
+          }
+        } else if (chunk.type === "text_delta") {
+          patchSide(side, (s) => ({ ...s, turns: appendText(s.turns, chunk.delta) }));
         } else if (chunk.type === "thinking_delta") {
-          thinkingAcc += chunk.delta;
-          setSide(side, { thinking: thinkingAcc });
+          patchSide(side, (s) => ({ ...s, turns: appendThinking(s.turns, chunk.delta) }));
+        } else if (chunk.type === "tool_call") {
+          patchSide(side, (s) => ({
+            ...s,
+            turns: addToolCall(s.turns, chunk.id, chunk.name, chunk.args),
+          }));
+        } else if (chunk.type === "tool_result") {
+          patchSide(side, (s) => ({
+            ...s,
+            turns: attachToolResult(s.turns, chunk.id, chunk.result, chunk.is_error),
+          }));
         } else if (chunk.type === "done") {
-          setSide(side, { usage: chunk.usage, latencyMs: performance.now() - t0, busy: false });
+          patchSide(side, (s) => ({
+            ...s,
+            turns: finalizeLastAssistant(s.turns),
+            usage: chunk.usage,
+            latencyMs: performance.now() - t0,
+            busy: false,
+          }));
           return;
         } else if (chunk.type === "error") {
-          setSide(side, { error: chunk.error, busy: false });
+          patchSide(side, (s) => ({
+            ...s,
+            turns: finalizeLastAssistant(s.turns),
+            error: chunk.error,
+            busy: false,
+          }));
           return;
         }
       }
-      setSide(side, { busy: false, latencyMs: performance.now() - t0 });
+      patchSide(side, (s) => ({
+        ...s,
+        turns: finalizeLastAssistant(s.turns),
+        latencyMs: performance.now() - t0,
+        busy: false,
+      }));
     } catch (e) {
-      setSide(side, { error: String(e), busy: false });
+      patchSide(side, (s) => ({
+        ...s,
+        turns: finalizeLastAssistant(s.turns),
+        error: String(e),
+        busy: false,
+      }));
     }
   }
 
@@ -173,14 +233,18 @@ function LiveCompare() {
     abortRef.current?.abort();
     abortRef.current = new AbortController();
     const sig = abortRef.current.signal;
-    await Promise.all([runOne("left", left.pick, text, sig), runOne("right", right.pick, text, sig)]);
+    setPrompt("");
+    await Promise.all([
+      runOne("left", left, text, thinking, sig),
+      runOne("right", right, text, thinking, sig),
+    ]);
   }
 
   function stop() {
     abortRef.current?.abort();
     abortRef.current = null;
-    setLeft((s) => ({ ...s, busy: false }));
-    setRight((s) => ({ ...s, busy: false }));
+    setLeft((s) => ({ ...s, turns: finalizeLastAssistant(s.turns), busy: false }));
+    setRight((s) => ({ ...s, turns: finalizeLastAssistant(s.turns), busy: false }));
   }
 
   const busy = left.busy || right.busy;
@@ -188,8 +252,8 @@ function LiveCompare() {
   return (
     <div>
       <p className="mb-3 text-xs text-neutral-500">
-        Send the same prompt to two models in parallel. Pick OSS on the left and Claude on the
-        right to mirror the eval comparison.
+        Send the same prompt to two models in parallel. Each column keeps its own
+        conversation — follow-up questions reference earlier turns.
       </p>
       <form
         className="mb-4 flex items-end gap-2"
@@ -244,12 +308,18 @@ function LiveCompare() {
         <Column
           title="Left"
           state={left}
-          onModelChange={(opt) => setLeft((s) => ({ ...s, pick: opt }))}
+          onModelChange={(opt) =>
+            setLeft((s) => ({ ...s, pick: opt, usage: null, latencyMs: null, error: null }))
+          }
+          onReset={() => setLeft((s) => initial(s.pick))}
         />
         <Column
           title="Right"
           state={right}
-          onModelChange={(opt) => setRight((s) => ({ ...s, pick: opt }))}
+          onModelChange={(opt) =>
+            setRight((s) => ({ ...s, pick: opt, usage: null, latencyMs: null, error: null }))
+          }
+          onReset={() => setRight((s) => initial(s.pick))}
         />
       </div>
     </div>
@@ -260,45 +330,67 @@ function Column({
   title,
   state,
   onModelChange,
+  onReset,
 }: {
   title: string;
   state: ColumnState;
   onModelChange: (opt: ModelOption) => void;
+  onReset: () => void;
 }) {
+  const turnCount = state.turns.filter((t) => t.kind === "user").length;
   return (
     <section className="flex h-[60vh] flex-col rounded border">
       <header className="flex items-center justify-between gap-2 border-b bg-neutral-50 px-3 py-2">
-        <div className="text-xs uppercase tracking-wide text-neutral-500">{title}</div>
-        <select
-          className="rounded border px-2 py-1 text-xs"
-          value={`${state.pick.provider}/${state.pick.model}`}
-          onChange={(e) => {
-            const found = MODEL_OPTIONS.find(
-              (o) => `${o.provider}/${o.model}` === e.target.value,
-            );
-            if (found) onModelChange(found);
-          }}
-        >
-          {MODEL_OPTIONS.map((o) => (
-            <option key={`${o.provider}/${o.model}`} value={`${o.provider}/${o.model}`}>
-              {o.label}
-            </option>
-          ))}
-        </select>
+        <div className="flex items-center gap-2">
+          <span className="text-xs uppercase tracking-wide text-neutral-500">{title}</span>
+          {turnCount > 0 && (
+            <span className="rounded bg-neutral-200 px-1.5 py-0.5 text-[10px] text-neutral-700">
+              {turnCount} turn{turnCount === 1 ? "" : "s"}
+            </span>
+          )}
+        </div>
+        <div className="flex items-center gap-2">
+          <select
+            className="rounded border px-2 py-1 text-xs"
+            value={`${state.pick.provider}/${state.pick.model}`}
+            onChange={(e) => {
+              const found = MODEL_OPTIONS.find(
+                (o) => `${o.provider}/${o.model}` === e.target.value,
+              );
+              if (found) onModelChange(found);
+            }}
+            disabled={state.busy}
+          >
+            {MODEL_OPTIONS.map((o) => (
+              <option key={`${o.provider}/${o.model}`} value={`${o.provider}/${o.model}`}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+          <button
+            type="button"
+            onClick={onReset}
+            disabled={state.busy || state.turns.length === 0}
+            className="rounded border px-2 py-1 text-xs text-neutral-700 hover:bg-neutral-100 disabled:opacity-40"
+            title="Start a fresh conversation for this column"
+          >
+            Reset
+          </button>
+        </div>
       </header>
-      <div className="flex-1 overflow-y-auto p-3 text-sm">
-        {state.thinking && <CompareThinking text={state.thinking} />}
-        <div className="whitespace-pre-wrap">
-          {state.error ? (
-            <span className="text-red-600">{state.error}</span>
-          ) : state.text ? (
-            state.text
-          ) : state.busy ? (
+      <div className="flex-1 space-y-3 overflow-y-auto p-3 text-sm">
+        {state.turns.length === 0 ? (
+          state.busy ? (
             <span className="text-neutral-400">…</span>
           ) : (
             <span className="text-neutral-400">Waiting for a prompt.</span>
-          )}
-        </div>
+          )
+        ) : (
+          state.turns.map((t, i) => <TurnView key={i} turn={t} />)
+        )}
+        {state.error && (
+          <div className="rounded bg-red-50 px-2 py-1 text-xs text-red-700">{state.error}</div>
+        )}
       </div>
       <footer className="border-t px-3 py-2 text-[11px] text-neutral-500">
         {state.usage ? (
@@ -313,28 +405,5 @@ function Column({
         )}
       </footer>
     </section>
-  );
-}
-
-function CompareThinking({ text }: { text: string }) {
-  const [open, setOpen] = useState(false);
-  return (
-    <div className="mb-2 rounded border border-amber-200 bg-amber-50 text-xs">
-      <button
-        type="button"
-        onClick={() => setOpen((o) => !o)}
-        className="flex w-full items-center gap-2 px-2 py-1 hover:bg-amber-100"
-      >
-        <span className="text-amber-600">{open ? "▾" : "▸"}</span>
-        <span className="font-mono text-[10px] uppercase tracking-wide text-amber-700">
-          thinking ({text.length} chars)
-        </span>
-      </button>
-      {open && (
-        <pre className="whitespace-pre-wrap break-words border-t border-amber-200 px-2 py-1 text-[11px] text-amber-900">
-          {text}
-        </pre>
-      )}
-    </div>
   );
 }
