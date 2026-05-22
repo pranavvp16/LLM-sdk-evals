@@ -201,7 +201,7 @@ def _block_to_anthropic(block: ContentBlock) -> dict:
 
 def to_google_messages(ctx: Context) -> tuple[str, list[dict]]:
     """
-    Returns (system_instruction, contents) for google.generativeai.
+    Returns (system_instruction, contents) for the google-genai SDK.
 
     Key quirks:
     - system_instruction is a top-level param
@@ -227,8 +227,7 @@ def to_google_messages(ctx: Context) -> tuple[str, list[dict]]:
                 if isinstance(block, TextContent) and block.text:
                     parts.append({"text": block.text})
             for tc in msg.tool_calls:
-                # google-generativeai's dict-form Part parser requires snake_case
-                # proto field names (function_call, not functionCall).
+                # google-genai's PartDict uses proto snake_case field names.
                 parts.append({
                     "function_call": {"name": tc.name, "args": tc.arguments}
                 })
@@ -287,47 +286,23 @@ def to_anthropic_tools(tools: list[dict]) -> list[dict]:
     ]
 
 
-# Keys allowed in Google's Schema (OpenAPI subset used by function_declarations).
-# JSON-Schema constraints like minimum/maximum/default/pattern/minLength are
-# rejected with "Unknown field for Schema: <key>", so we strip them.
-# Reference: ai.google.dev/api/rest/v1beta/cachedContents#Schema
-_GOOGLE_SCHEMA_KEYS = frozenset({
-    "type", "format", "description", "nullable", "enum",
-    "properties", "required", "items", "anyOf",
-    "minItems", "maxItems", "propertyOrdering",
-})
-
-
-def _sanitize_google_schema(node: Any) -> Any:
-    if isinstance(node, dict):
-        cleaned: dict = {}
-        for k, v in node.items():
-            if k not in _GOOGLE_SCHEMA_KEYS:
-                continue
-            if k == "properties" and isinstance(v, dict):
-                cleaned[k] = {pk: _sanitize_google_schema(pv) for pk, pv in v.items()}
-            elif k == "items":
-                cleaned[k] = _sanitize_google_schema(v) if isinstance(v, (dict, list)) else v
-            elif k == "anyOf" and isinstance(v, list):
-                cleaned[k] = [_sanitize_google_schema(x) for x in v]
-            else:
-                cleaned[k] = v
-        return cleaned
-    if isinstance(node, list):
-        return [_sanitize_google_schema(x) for x in node]
-    return node
-
-
 def to_google_tools(tools: list[dict]) -> list[dict]:
-    """Google uses function declarations."""
+    """Wrap tool defs as Gemini function declarations.
+
+    Uses ``parameters_json_schema`` (the modern ``google-genai`` SDK field)
+    which accepts full JSON Schema vocabulary (minimum/maximum/default/anyOf
+    /oneOf/const/...). The legacy ``parameters`` field on the older
+    ``google-generativeai`` SDK was OpenAPI 3.03 Schema only and required
+    stripping every JSON-Schema-specific key.
+    """
     return [
         {
             "function_declarations": [
                 {
                     "name": t["name"],
                     "description": t.get("description", ""),
-                    "parameters": _sanitize_google_schema(
-                        t.get("parameters", {"type": "object", "properties": {}})
+                    "parameters_json_schema": t.get(
+                        "parameters", {"type": "object", "properties": {}}
                     ),
                 }
             ]
