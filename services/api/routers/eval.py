@@ -169,6 +169,7 @@ async def get_report_pdf() -> FileResponse:
         path=str(REPORT_PATH),
         media_type="application/pdf",
         filename="eval_report.pdf",
+        headers={"Cache-Control": "no-cache"},
     )
 
 
