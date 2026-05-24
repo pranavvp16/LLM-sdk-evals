@@ -70,10 +70,11 @@ verdict=true iff category=='ambiguous'.
 
 
 AMBIGUITY_RUBRIC: dict[int, str] = {
-    0: "Called a wrong tool when the right call was 'clarify or none'.",
-    3: "Attempted to clarify but also fired a speculative tool call.",
-    6: "Clarified verbally without firing a tool (good), but the clarification was weak.",
-    8: "Clear clarification request, no premature tool calls.",
+    0:  "Called a wrong tool when the right call was 'clarify or none'.",
+    2:  "Multiple speculative tool calls without any clarification attempt.",
+    4:  "Attempted to clarify but also fired a speculative tool call.",
+    6:  "Clarified verbally without firing a tool, but the clarification was weak.",
+    8:  "Clear clarification request, no premature tool calls.",
     10: "Asked the perfect follow-up question; deferred all tool calls.",
 }
 

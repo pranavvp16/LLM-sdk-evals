@@ -5,18 +5,27 @@ parallel via ``asyncio.gather`` and produces an ``AxisPanelResult`` with:
 
   - aggregated_score          : majority verdict if path-unanimous; else mean
   - verdict_path_majority     : the verdict path the majority took (or first
-                                judge's path on full disagreement)
+                                surviving judge's path on full disagreement)
   - judges                    : per-judge JudgeAxisResult (dict form)
-  - agreement                 : {binary_unanimous, geval_stdev, kappa_avg}
+  - panel_status              : "success" | "partial" | "all_failed"
+  - agreement                 : {binary_unanimous, geval_stdev, kappa_avg, kappa_status}
 
 Aggregation rules:
-  * If all surviving (non-failed) judges land on the same final verdict key,
-    use that verdict's score; mark ``binary_unanimous = True``.
-  * Otherwise take the mean of per-judge scores; ``binary_unanimous = False``.
-  * G-Eval leaves emit a numeric score directly; their stdev across surviving
-    judges is reported as ``geval_stdev`` (None when no G-Eval leaf was hit).
+  * Only judges with ``status=='success'`` contribute (failed judges keep
+    their entry in ``judges`` for the UI but are excluded from aggregation
+    AND from path-unanimity AND from κ).
+  * If all surviving judges land on the same final verdict key, use that
+    verdict's score; mark ``binary_unanimous = True``.
+  * Otherwise take the mean of per-judge scores.
+  * G-Eval leaves emit a numeric score directly; their stdev across
+    surviving judges is reported as ``geval_stdev`` (None when no G-Eval
+    leaf was hit by ≥2 survivors).
   * ``kappa_avg`` is the mean pairwise Cohen's κ over binary node verdicts
-    that all surviving judges traversed (NaN → None).
+    that all surviving judges traversed (None when undefined). With only
+    3 judges per axis you get 3 pairs, and κ over <5 binary verdicts per
+    pair is statistical noise — we surface ``kappa_status`` so the UI can
+    show "insufficient samples" rather than rendering a number that means
+    nothing.
 """
 
 from __future__ import annotations
@@ -38,6 +47,11 @@ from eval.dag.nodes import AxisDAG
 
 JudgeSpec = tuple[str, str]
 
+# Minimum number of binary-verdict observations per judge pair to report
+# a Cohen's κ value. Below this we report kappa_status="insufficient_samples"
+# and kappa_avg=None — Cohen's κ on n<5 is dominated by sampling noise.
+_KAPPA_MIN_SAMPLES = 5
+
 
 @dataclass
 class AxisPanelResult:
@@ -47,6 +61,8 @@ class AxisPanelResult:
     binary_unanimous: bool
     geval_stdev: float | None
     kappa_avg: float | None
+    kappa_status: str = "ok"           # ok | insufficient_samples | undefined
+    panel_status: str = "success"      # success | partial | all_failed
     extra: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -54,10 +70,12 @@ class AxisPanelResult:
             "aggregated_score": self.aggregated_score,
             "verdict_path_majority": self.verdict_path_majority,
             "judges": [j.to_dict() for j in self.judges],
+            "panel_status": self.panel_status,
             "agreement": {
                 "binary_unanimous": self.binary_unanimous,
                 "geval_stdev": self.geval_stdev,
                 "kappa_avg": self.kappa_avg,
+                "kappa_status": self.kappa_status,
             },
             **self.extra,
         }
@@ -107,10 +125,24 @@ def _binary_node_verdicts(judges: list[JudgeAxisResult]) -> dict[str, list[bool]
     return by_node
 
 
+def _classify_panel_status(judges: list[JudgeAxisResult]) -> str:
+    """Three-state panel health summary based on per-judge status."""
+    n_ok = sum(1 for j in judges if j.status == "success" and j.score is not None)
+    if n_ok == 0:
+        return "all_failed"
+    if n_ok < len(judges):
+        return "partial"
+    return "success"
+
+
 def _aggregate(judges: list[JudgeAxisResult]) -> AxisPanelResult:
+    panel_status = _classify_panel_status(judges)
     survivors = [j for j in judges if j.status == "success" and j.score is not None]
 
     if not survivors:
+        # All judges failed — aggregated_score is None and binary_unanimous is
+        # meaningless. Consumers MUST check panel_status to distinguish
+        # "everyone failed" from "everyone disagreed".
         return AxisPanelResult(
             aggregated_score=None,
             verdict_path_majority=[],
@@ -118,9 +150,11 @@ def _aggregate(judges: list[JudgeAxisResult]) -> AxisPanelResult:
             binary_unanimous=False,
             geval_stdev=None,
             kappa_avg=None,
+            kappa_status="undefined",
+            panel_status=panel_status,
         )
 
-    # Path-unanimity check
+    # Path-unanimity check (only across survivors — failed judges have no path)
     final_keys = [_verdict_key_of(j.verdict_path) for j in survivors]
     unanimous = len(set(final_keys)) == 1
 
@@ -147,14 +181,19 @@ def _aggregate(judges: list[JudgeAxisResult]) -> AxisPanelResult:
 
     # κ over commonly-traversed binary nodes
     by_node = _binary_node_verdicts(survivors)
-    if by_node:
-        # Transpose to per-judge boolean lists across nodes
+    if not by_node:
+        kappa_avg, kappa_status = None, "undefined"
+    elif len(by_node) < _KAPPA_MIN_SAMPLES:
+        # Per-pair observation count == len(by_node); below threshold κ is noise.
+        kappa_avg, kappa_status = None, "insufficient_samples"
+    else:
         node_names = list(by_node.keys())
         per_judge = [[by_node[n][i] for n in node_names] for i in range(len(survivors))]
         k = mean_pairwise_kappa(per_judge)
-        kappa_avg = None if (k is None or math.isnan(k)) else k
-    else:
-        kappa_avg = None
+        if k is None or math.isnan(k):
+            kappa_avg, kappa_status = None, "undefined"
+        else:
+            kappa_avg, kappa_status = k, "ok"
 
     return AxisPanelResult(
         aggregated_score=aggregated,
@@ -163,6 +202,8 @@ def _aggregate(judges: list[JudgeAxisResult]) -> AxisPanelResult:
         binary_unanimous=unanimous,
         geval_stdev=geval_stdev,
         kappa_avg=kappa_avg,
+        kappa_status=kappa_status,
+        panel_status=panel_status,
     )
 
 
@@ -172,7 +213,7 @@ async def score_axis_panel(
     wrapper: LLMWrapper,
     judges: list[JudgeSpec],
     *,
-    geval_cache: dict[tuple[str, str], list[str]] | None = None,
+    geval_cache: dict[tuple[str, str, str], list[str]] | None = None,
 ) -> AxisPanelResult:
     """Fan out the same DAG to every judge in parallel; aggregate."""
     tasks = [

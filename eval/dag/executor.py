@@ -8,9 +8,12 @@ cost/latency.
 A node prompt is a Python format-string rendered against the ``case`` dict
 (typically `{prompt, response, expected, ...}`). The judge is asked for
 JSON: `{"verdict": ..., "reason": ...}` for branch nodes, `{"score": int,
-"reason": ...}` for G-Eval leaves. Up to 3 retries on JSON parse failure;
-on terminal failure the traversal halts and the partial path is returned
-with ``status="judge_failed"``.
+"reason": ...}` for G-Eval leaves. Up to 3 retries on JSON parse failure
+with varied temperature so a malformed-JSON response doesn't fail
+identically every time; on terminal failure the traversal halts and the
+partial path is returned with ``status="judge_failed"``. Retry-attempt
+token spend is still folded into the leaf/branch ``NodeOutput`` and into
+the run-level cost rollup.
 """
 
 from __future__ import annotations
@@ -32,6 +35,12 @@ logger = logging.getLogger(__name__)
 
 _JSON_RE = re.compile(r"\{.*\}", re.DOTALL)
 _MAX_RETRIES = 3
+
+# Vary temperature across retries — repeating the same prompt at the same
+# temp tends to produce the same malformed output. gpt-5 rejects any temp
+# value other than the default, so for that family we skip the override
+# (see ``_judge_temperature``).
+_RETRY_TEMPERATURES: tuple[float, ...] = (0.0, 0.3, 0.6)
 
 
 @dataclass
@@ -134,16 +143,12 @@ def _judge_id(model: ModelDef) -> str:
     return f"{model.provider}/{model.id}"
 
 
-def _judge_temperature(model: ModelDef) -> float | None:
-    """Most providers happily accept ``temperature=0.0`` for deterministic judging.
-
-    OpenAI's gpt-5 family rejects any value other than the default of 1.0
-    (returns HTTP 400). For those models we omit the temperature param and
-    accept slightly higher response variance.
-    """
+def _retry_temperature(model: ModelDef, attempt: int) -> float | None:
+    """Vary temperature across retries; respect gpt-5's default-only rule."""
     if model.provider == "openai" and model.id.startswith("gpt-5"):
         return None
-    return 0.0
+    idx = min(attempt, len(_RETRY_TEMPERATURES) - 1)
+    return _RETRY_TEMPERATURES[idx]
 
 
 async def _call_judge(
@@ -153,13 +158,14 @@ async def _call_judge(
     *,
     max_tokens: int,
     conversation_id: str,
+    temperature: float | None,
     system: str = "You are an impartial evaluator. Respond ONLY with JSON.",
 ) -> tuple[AssistantMessage | None, float]:
     """Single judge call, returns (message_or_None_on_error, latency_ms)."""
     ctx = Context(
         system_prompt=system,
         messages=[UserMessage(content=prompt)],
-        temperature=_judge_temperature(model),
+        temperature=temperature,
         max_tokens=max_tokens,
     )
     t0 = time.perf_counter()
@@ -173,6 +179,20 @@ async def _call_judge(
     return msg, (time.perf_counter() - t0) * 1000.0
 
 
+@dataclass
+class _BranchOutcome:
+    """Return shape for ``_resolve_branch_node``.
+
+    ``out`` and ``target`` are set on success; ``out`` is None on terminal
+    failure. ``partial_usage`` aggregates token / cost / latency across
+    every retry attempt so the executor can fold them into the final
+    JudgeAxisResult even when the node ultimately failed.
+    """
+    out: NodeOutput | None
+    target: str | None
+    partial_usage: dict[str, float]
+
+
 async def _resolve_branch_node(
     node: BinaryNode | NonBinaryNode,
     wrapper: LLMWrapper,
@@ -180,18 +200,36 @@ async def _resolve_branch_node(
     case: dict,
     *,
     conversation_id: str,
-) -> tuple[NodeOutput | None, str | None]:
-    """Run one branch node, return (NodeOutput, next_target). next_target is None on failure."""
+) -> _BranchOutcome:
+    """Run one branch node. Retries vary temperature; partial spend is
+    always returned, even on terminal failure."""
     rendered = _render(node.prompt, case)
+    partial: dict[str, float] = {
+        "input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0, "latency_ms": 0.0,
+    }
+    last_error: str = ""
+
     for attempt in range(_MAX_RETRIES):
         msg, latency_ms = await _call_judge(
-            wrapper, model, rendered, max_tokens=600, conversation_id=conversation_id,
+            wrapper, model, rendered,
+            max_tokens=600,
+            conversation_id=conversation_id,
+            temperature=_retry_temperature(model, attempt),
         )
+        partial["latency_ms"] += latency_ms
         if msg is None:
+            last_error = "wrapper exception"
             continue
+
+        usage = msg.usage
+        partial["input_tokens"] += usage.input_tokens
+        partial["output_tokens"] += usage.output_tokens
+        partial["cost_usd"] += usage.cost_usd(model)
+
         raw = _extract_text(msg)
         parsed = _parse_json(raw)
         if parsed is None or "verdict" not in parsed:
+            last_error = f"non-JSON: {raw[:120]!r}"
             logger.warning(
                 "node %s: non-JSON on attempt %d (%r)", node.name, attempt, raw[:160]
             )
@@ -199,11 +237,11 @@ async def _resolve_branch_node(
 
         raw_verdict = parsed["verdict"]
         reason = str(parsed.get("reason", ""))
-        usage = msg.usage
 
         if isinstance(node, BinaryNode):
             verdict_bool = _coerce_bool(raw_verdict)
             if verdict_bool is None:
+                last_error = f"ambiguous binary verdict {raw_verdict!r}"
                 logger.warning(
                     "node %s: ambiguous binary verdict %r on attempt %d",
                     node.name, raw_verdict, attempt,
@@ -213,18 +251,19 @@ async def _resolve_branch_node(
                 node=node.name,
                 verdict=verdict_bool,         # canonical bool — keeps κ + aggregation honest
                 reason=reason,
-                latency_ms=latency_ms,
-                input_tokens=usage.input_tokens,
-                output_tokens=usage.output_tokens,
-                cost_usd=usage.cost_usd(model),
+                latency_ms=partial["latency_ms"],
+                input_tokens=partial["input_tokens"],
+                output_tokens=partial["output_tokens"],
+                cost_usd=partial["cost_usd"],
             )
             target = node.on_true if verdict_bool else node.on_false
-            return out, target
+            return _BranchOutcome(out=out, target=target, partial_usage=partial)
 
         # NonBinary: verdict is a label string
         label = str(raw_verdict).strip().lower()
         target = node.branches.get(label)
         if target is None:
+            last_error = f"unknown branch label {label!r}"
             logger.warning(
                 "node %s: unknown branch label %r (allowed: %s)",
                 node.name, label, list(node.branches.keys()),
@@ -234,14 +273,15 @@ async def _resolve_branch_node(
             node=node.name,
             verdict=label,
             reason=reason,
-            latency_ms=latency_ms,
-            input_tokens=usage.input_tokens,
-            output_tokens=usage.output_tokens,
-            cost_usd=usage.cost_usd(model),
+            latency_ms=partial["latency_ms"],
+            input_tokens=partial["input_tokens"],
+            output_tokens=partial["output_tokens"],
+            cost_usd=partial["cost_usd"],
         )
-        return out, target
+        return _BranchOutcome(out=out, target=target, partial_usage=partial)
 
-    return None, None
+    logger.warning("node %s: terminal failure (%s)", node.name, last_error)
+    return _BranchOutcome(out=None, target=None, partial_usage=partial)
 
 
 async def run_axis(
@@ -249,20 +289,24 @@ async def run_axis(
     judge_model: ModelDef,
     case: dict,
     wrapper: LLMWrapper,
-    geval_cache: dict[tuple[str, str], list[str]] | None = None,
+    geval_cache: dict[tuple[str, str, str], list[str]] | None = None,
 ) -> JudgeAxisResult:
     """Traverse the DAG for a single judge; return per-judge result.
 
     Per-call ``conversation_id`` is derived from the case's ``prompt_id`` (if
-    set), the axis name, the judge id, and the node name — so every judge
-    call gets its own ingestion-log conversation rather than collapsing the
-    whole run into one row per judge.
+    set), the axis name, the judge ``provider/model`` (so two judges that
+    share a model id never collide on the same log row), and the node name.
     """
     result = JudgeAxisResult(judge_id=_judge_id(judge_model), score=None)
     current = dag.entry
 
     prompt_id = str(case.get("prompt_id") or case.get("id") or "p?")
-    convo_prefix = f"eval-{prompt_id}-{dag.axis_name}-{judge_model.id}"
+    # Include provider AND id so that two judges sharing a model id (e.g.
+    # both Sonnet for an ablation run) get distinct conversations.
+    convo_prefix = (
+        f"eval-{prompt_id}-{dag.axis_name}-"
+        f"{judge_model.provider}-{judge_model.id}"
+    )
 
     while True:
         if current.startswith("verdict:"):
@@ -294,22 +338,25 @@ async def run_axis(
             return result
 
         # Branch node (Binary / NonBinary)
-        out, target = await _resolve_branch_node(
+        outcome = await _resolve_branch_node(
             node, wrapper, judge_model, case,
             conversation_id=f"{convo_prefix}-{node.name}",
         )
-        if out is None or target is None:
+        # Always fold retry-attempt spend into the roll-up, even on failure.
+        result.latency_ms += outcome.partial_usage["latency_ms"]
+        result.input_tokens += int(outcome.partial_usage["input_tokens"])
+        result.output_tokens += int(outcome.partial_usage["output_tokens"])
+        result.cost_usd += outcome.partial_usage["cost_usd"]
+
+        if outcome.out is None or outcome.target is None:
             result.status = "judge_failed"
             result.error = f"branch node {node.name} failed"
             return result
-        result.node_outputs.append(out)
-        result.latency_ms += out.latency_ms
-        result.input_tokens += out.input_tokens
-        result.output_tokens += out.output_tokens
-        result.cost_usd += out.cost_usd
+
+        result.node_outputs.append(outcome.out)
         if isinstance(node, BinaryNode):
-            verdict_label = "T" if out.verdict is True else "F"
+            verdict_label = "T" if outcome.out.verdict is True else "F"
         else:
-            verdict_label = str(out.verdict)
+            verdict_label = str(outcome.out.verdict)
         result.verdict_path.append(f"{node.name}:{verdict_label}")
-        current = target
+        current = outcome.target

@@ -68,10 +68,11 @@ Respond ONLY with JSON:
 
 
 PARTIAL_RUBRIC: dict[int, str] = {
-    0: "Less than 25% of the multi-step request completed.",
-    3: "About half completed; missing parts not acknowledged.",
-    5: "Half completed; missing parts explicitly acknowledged.",
-    7: "Most parts completed; one minor gap acknowledged.",
+    0:  "Less than 25% of the multi-step request completed.",
+    2:  "About half completed; missing parts NOT acknowledged.",
+    4:  "Half completed; missing parts vaguely acknowledged.",
+    6:  "Half completed; missing parts explicitly acknowledged.",
+    8:  "Most parts completed; one minor gap acknowledged.",
     10: "Substantially complete; gap is trivial and explicitly flagged.",
 }
 

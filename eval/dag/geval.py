@@ -21,6 +21,7 @@ We therefore use the raw integer; this is documented in the report's
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -35,6 +36,16 @@ logger = logging.getLogger(__name__)
 
 _JSON_RE = re.compile(r"\{.*\}", re.DOTALL)
 _MAX_RETRIES = 3
+
+# Same logic as ``executor._retry_temperature`` — vary across retries.
+_RETRY_TEMPERATURES: tuple[float, ...] = (0.0, 0.3, 0.6)
+
+
+def _rubric_hash(rubric: dict[int, str]) -> str:
+    """Stable short hash of a rubric so two leaves with the same criteria
+    but different rubric bands don't share a cached eval-steps result."""
+    canonical = json.dumps(sorted(rubric.items()), separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:12]
 
 
 _EVAL_STEPS_PROMPT = """\
@@ -91,11 +102,12 @@ def _judge_id(model: ModelDef) -> str:
     return f"{model.provider}/{model.id}"
 
 
-def _judge_temperature(model: ModelDef) -> float | None:
-    # gpt-5 family rejects temperature != 1.0 — match executor._judge_temperature.
+def _retry_temperature(model: ModelDef, attempt: int) -> float | None:
+    """Vary temperature across retries; respect gpt-5's default-only rule."""
     if model.provider == "openai" and model.id.startswith("gpt-5"):
         return None
-    return 0.0
+    idx = min(attempt, len(_RETRY_TEMPERATURES) - 1)
+    return _RETRY_TEMPERATURES[idx]
 
 
 async def _generate_eval_steps(
@@ -114,14 +126,14 @@ async def _generate_eval_steps(
     the partial token spend. Caller folds this into the leaf's NodeOutput.
     """
     prompt = _EVAL_STEPS_PROMPT.format(criteria=criteria, rubric=_rubric_block(rubric))
-    ctx = Context(
-        system_prompt="You design evaluation rubrics. Respond ONLY with a JSON list.",
-        messages=[UserMessage(content=prompt)],
-        temperature=_judge_temperature(model),
-        max_tokens=800,
-    )
     usage = {"input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0, "latency_ms": 0.0}
     for attempt in range(_MAX_RETRIES):
+        ctx = Context(
+            system_prompt="You design evaluation rubrics. Respond ONLY with a JSON list.",
+            messages=[UserMessage(content=prompt)],
+            temperature=_retry_temperature(model, attempt),
+            max_tokens=800,
+        )
         t0 = time.perf_counter()
         try:
             msg = await wrapper.complete(
@@ -157,7 +169,7 @@ async def score_leaf(
     model: ModelDef,
     case: dict,
     *,
-    cache: dict[tuple[str, str], list[str]] | None = None,
+    cache: dict[tuple[str, str, str], list[str]] | None = None,
     conversation_id: str = "geval",
 ):
     """Score one G-Eval leaf. Returns a NodeOutput-compatible object.
@@ -165,11 +177,14 @@ async def score_leaf(
     Token + cost accounting includes BOTH the eval-steps generation call
     (cache miss only) AND the scoring call. Steps usage is zero when the
     cache hits — that's the correct accounting.
+
+    Cache key is ``(judge_id, criteria, rubric_hash)`` so two leaves with
+    the same criteria but different rubric bands don't share stale steps.
     """
     from eval.dag.executor import NodeOutput  # avoid circular import at module load
 
     judge = _judge_id(model)
-    key = (judge, leaf.criteria)
+    key = (judge, leaf.criteria, _rubric_hash(leaf.rubric))
     t0 = time.perf_counter()
 
     steps_usage = {"input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0, "latency_ms": 0.0}
@@ -203,16 +218,15 @@ async def score_leaf(
         expected=case.get("expected", "(none)"),
         response=case.get("response", "(none)"),
     )
-    ctx = Context(
-        system_prompt="You are an impartial evaluator. Respond ONLY with JSON.",
-        messages=[UserMessage(content=scoring_prompt)],
-        temperature=_judge_temperature(model),
-        max_tokens=600,
-    )
-
     last_raw = ""
     scoring_usage = {"input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0}
     for attempt in range(_MAX_RETRIES):
+        ctx = Context(
+            system_prompt="You are an impartial evaluator. Respond ONLY with JSON.",
+            messages=[UserMessage(content=scoring_prompt)],
+            temperature=_retry_temperature(model, attempt),
+            max_tokens=600,
+        )
         try:
             msg = await wrapper.complete(
                 model, ctx, session_id="eval-dag",
