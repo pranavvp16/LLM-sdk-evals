@@ -139,8 +139,8 @@ export function EvalBrowser() {
       {!payload ? (
         <EmptyState onRun={onRun} runErr={runErr} run={run} />
       ) : (
-        <div className="grid flex-1 grid-cols-1 overflow-hidden rounded-lg border border-neutral-200 lg:grid-cols-[18rem_1fr]">
-          <div className={mobileShowDetail ? "hidden lg:block" : "block"}>
+        <div className="grid min-h-0 flex-1 grid-cols-1 overflow-hidden rounded-lg border border-neutral-200 lg:grid-cols-[18rem_1fr] lg:grid-rows-[minmax(0,1fr)]">
+          <div className={`min-h-0 ${mobileShowDetail ? "hidden lg:block" : "block"}`}>
             <PromptList
               rows={rows}
               selectedId={selected?.prompt_id ?? null}
@@ -150,7 +150,7 @@ export function EvalBrowser() {
               }}
             />
           </div>
-          <div className={`overflow-hidden bg-white ${mobileShowDetail ? "block" : "hidden lg:block"}`}>
+          <div className={`min-h-0 overflow-hidden bg-white ${mobileShowDetail ? "block" : "hidden lg:block"}`}>
             {selected ? (
               <>
                 <MobileBackButton onClick={() => setMobileShowDetail(false)} />
