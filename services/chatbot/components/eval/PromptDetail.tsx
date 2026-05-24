@@ -50,7 +50,11 @@ const AGENT_AXES: { key: keyof AgentScores; label: string }[] = [
 
 export function PromptDetail({ row }: { row: EvalRow }) {
   return (
-    <section className="flex h-full flex-col overflow-hidden">
+    // Natural-height layout: the page is what scrolls. SidePanels flow
+    // side-by-side on lg and stack on mobile; their own sticky headers
+    // keep the score chips visible as the user scrolls down a long
+    // response.
+    <section className="flex flex-col">
       <header className="border-b border-neutral-200 px-4 py-4 sm:px-5">
         <div className="flex flex-wrap items-center gap-2 text-xs text-neutral-500">
           <CategoryBadge category={row.category} />
@@ -75,7 +79,7 @@ export function PromptDetail({ row }: { row: EvalRow }) {
       </header>
 
       <div
-        className={`grid min-h-0 flex-1 grid-cols-1 divide-y divide-neutral-200 overflow-auto lg:divide-x lg:divide-y-0 lg:overflow-hidden lg:grid-rows-[1fr] ${
+        className={`grid grid-cols-1 items-start divide-y divide-neutral-200 lg:divide-x lg:divide-y-0 ${
           row.oss_guarded ? "lg:grid-cols-3" : "lg:grid-cols-2"
         }`}
       >
@@ -104,7 +108,7 @@ function SidePanel({ row, side }: { row: EvalRow; side: SideKey }) {
   const scores = data.scores as StaticScores | AgentScores;
 
   return (
-    <div className="flex min-h-0 min-w-0 flex-col overflow-auto">
+    <div className="flex min-w-0 flex-col">
       <header className="sticky top-0 z-10 border-b border-neutral-200 bg-white px-4 py-2">
         <div className="flex items-center justify-between">
           <span className="text-xs font-medium uppercase tracking-wide text-neutral-500">
