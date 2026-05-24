@@ -73,7 +73,7 @@ export function PromptDetail({ row }: { row: EvalRow }) {
       </header>
 
       <div
-        className={`grid flex-1 grid-cols-1 divide-y divide-neutral-200 overflow-auto lg:divide-x lg:divide-y-0 ${
+        className={`grid min-h-0 flex-1 grid-cols-1 divide-y divide-neutral-200 overflow-auto lg:divide-x lg:divide-y-0 lg:overflow-hidden lg:grid-rows-[1fr] ${
           row.oss_guarded ? "lg:grid-cols-3" : "lg:grid-cols-2"
         }`}
       >
@@ -102,7 +102,7 @@ function SidePanel({ row, side }: { row: EvalRow; side: SideKey }) {
   const scores = data.scores as StaticScores | AgentScores;
 
   return (
-    <div className="flex flex-col overflow-auto">
+    <div className="flex min-h-0 min-w-0 flex-col overflow-auto">
       <header className="sticky top-0 z-10 border-b border-neutral-200 bg-white px-4 py-2">
         <div className="flex items-center justify-between">
           <span className="text-xs font-medium uppercase tracking-wide text-neutral-500">
