@@ -102,6 +102,23 @@ async def stream_openai_completions(
         params["tools"] = to_openai_tools(ctx.tools)
         params["tool_choice"] = "auto"
 
+    # gpt-5 family is a reasoning model by default; without explicitly
+    # setting reasoning_effort, the request silently spends most of
+    # max_completion_tokens on internal reasoning and returns empty
+    # visible content. ``ctx.thinking is True`` opts back into full
+    # reasoning; the default (None/False) requests minimal reasoning so
+    # the visible JSON answer fits in our token budget.
+    if (
+        model.provider == "openai"
+        and model.id.startswith("gpt-5")
+        and ctx.thinking is not True
+    ):
+        # ``reasoning_effort`` is a newer top-level field; older openai
+        # SDK versions (< 1.62) reject it as a kwarg, so route via
+        # extra_body which the AsyncCompletions client passes through
+        # to the JSON body unchanged.
+        params["extra_body"] = {"reasoning_effort": "minimal"}
+
     # Remove stream_options for providers that don't support it
     if not compat.get("supports_usage_in_streaming", True):
         params.pop("stream_options", None)

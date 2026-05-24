@@ -25,6 +25,7 @@ from redis.asyncio import Redis
 from sdk import LLMWrapper
 
 from services.api.config import get_settings
+from services.api.judge_registry import register_judge_models
 from services.api.oss_registry import register_oss_models
 from services.api.routers import chat, eval as eval_router, health, ingest, metrics
 from services.api.tools.builtins import register_builtins
@@ -37,6 +38,7 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     register_oss_models()
+    register_judge_models()
 
     app.state.pg_pool = await asyncpg.create_pool(
         dsn=settings.asyncpg_dsn(),

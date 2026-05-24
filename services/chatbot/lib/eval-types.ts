@@ -21,13 +21,59 @@ export const HeuristicSchema = z.object({
 });
 export type Heuristic = z.infer<typeof HeuristicSchema>;
 
-// ── static row (hallucination / bias / safety) ────────────────────────────
+// ── 3-judge DAG panel score (per axis) ────────────────────────────────────
+
+export const JudgeNodeOutputSchema = z.object({
+  node: z.string(),
+  verdict: z.union([z.boolean(), z.string(), z.number()]).nullable().optional(),
+  score: z.number().nullable().optional(),
+  reason: z.string().default(""),
+  latency_ms: z.number().optional(),
+  cost_usd: z.number().optional(),
+});
+export type JudgeNodeOutput = z.infer<typeof JudgeNodeOutputSchema>;
+
+export const JudgeOpinionSchema = z.object({
+  judge_id: z.string(),
+  score: z.number().nullable(),
+  verdict_path: z.array(z.string()),
+  node_outputs: z.array(JudgeNodeOutputSchema),
+  latency_ms: z.number(),
+  input_tokens: z.number().int(),
+  output_tokens: z.number().int(),
+  cost_usd: z.number(),
+  status: z.enum(["success", "judge_failed"]),
+  error: z.string().nullable().optional(),
+});
+export type JudgeOpinion = z.infer<typeof JudgeOpinionSchema>;
+
+export const PanelAgreementSchema = z.object({
+  binary_unanimous: z.boolean(),
+  geval_stdev: z.number().nullable(),
+  kappa_avg: z.number().nullable(),
+});
+export type PanelAgreement = z.infer<typeof PanelAgreementSchema>;
+
+export const PanelScoreSchema = z.object({
+  aggregated_score: z.number().nullable(),
+  verdict_path_majority: z.array(z.string()),
+  judges: z.array(JudgeOpinionSchema),
+  agreement: PanelAgreementSchema,
+  // Axis-specific extras:
+  category_majority: z.string().nullable().optional(),   // bias
+  llamaguard_pre_signal: z.string().optional(),          // safety
+  toxicity_flagged: z.boolean().optional(),              // safety
+  violations: z.array(z.string()).optional(),            // role_violation
+});
+export type PanelScore = z.infer<typeof PanelScoreSchema>;
+
+// ── static row (hallucination / bias / safety / role_violation) ────────────
 
 export const StaticScoresSchema = z.object({
-  hallucination: z.number().int(),
-  bias: z.number().int(),
-  safety: z.number().int(),
-  rationale: z.string(),
+  hallucination: PanelScoreSchema,
+  bias: PanelScoreSchema,
+  safety: PanelScoreSchema,
+  role_violation: PanelScoreSchema,
 });
 export type StaticScores = z.infer<typeof StaticScoresSchema>;
 
@@ -74,12 +120,11 @@ export const ToolStepSchema = z.object({
 export type ToolStep = z.infer<typeof ToolStepSchema>;
 
 export const AgentScoresSchema = z.object({
-  tool_selection: z.number().int(),
-  argument_correctness: z.number().int(),
-  task_completion: z.number().int(),
-  output_grounding: z.number().int(),
-  safety_with_tools: z.number().int(),
-  rationale: z.string(),
+  tool_selection: PanelScoreSchema,
+  argument_correctness: PanelScoreSchema,
+  task_completion: PanelScoreSchema,
+  output_grounding: PanelScoreSchema,
+  safety_with_tools: PanelScoreSchema,
 });
 export type AgentScores = z.infer<typeof AgentScoresSchema>;
 
@@ -129,7 +174,15 @@ export const MetadataSchema = z.object({
   oss_provider: z.string(),
   oss_model: z.string(),
   frontier_model: z.string(),
-  judge_model: z.string(),
+  judge_model: z.string(),                                  // legacy: "panel"
+  judge_panel: z.array(z.string()).optional(),              // new: ["anthropic/claude-sonnet-4-6", ...]
+  judge_total_cost_usd: z.number().optional(),
+  judge_total_latency_ms: z.number().optional(),
+  judge_per_judge: z.record(z.string(), z.object({
+    cost_usd: z.number(),
+    latency_ms: z.number(),
+    calls: z.number().int(),
+  })).optional(),
   static_prompts_total: z.number().int(),
   agent_prompts_total: z.number().int(),
   system_prompt_hash: z.string(),
