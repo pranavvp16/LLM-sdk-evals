@@ -2,7 +2,7 @@
  * Small presentational primitives shared by the eval browser components.
  */
 
-import type { Heuristic } from "../../lib/eval-types";
+import type { Heuristic, JudgeOpinion, PanelScore } from "../../lib/eval-types";
 
 export const CATEGORY_BADGE: Record<string, { letter: string; cls: string }> = {
   factual: { letter: "F", cls: "bg-blue-100 text-blue-800" },
@@ -27,20 +27,21 @@ export function CategoryBadge({ category }: { category: string }) {
   );
 }
 
-export function ScoreChip({ value, label }: { value: number; label?: string }) {
+export function ScoreChip({ value, label }: { value: number | null | undefined; label?: string }) {
+  const v = typeof value === "number" ? value : -1;
   const cls =
-    value < 0
+    v < 0
       ? "bg-neutral-200 text-neutral-500"
-      : value >= 5
+      : v >= 4.5
       ? "bg-green-600 text-white"
-      : value === 4
+      : v >= 3.5
       ? "bg-lime-500 text-white"
-      : value === 3
+      : v >= 2.5
       ? "bg-amber-400 text-amber-950"
-      : value === 2
+      : v >= 1.5
       ? "bg-orange-500 text-white"
       : "bg-red-600 text-white";
-  const display = value < 0 ? "—" : String(value);
+  const display = v < 0 ? "—" : v.toFixed(1);
   return (
     <span
       className={`inline-flex h-5 min-w-[2rem] items-center justify-center rounded px-1 font-mono text-[11px] ${cls}`}
@@ -48,6 +49,66 @@ export function ScoreChip({ value, label }: { value: number; label?: string }) {
     >
       {display}
     </span>
+  );
+}
+
+/** Agreement traffic light next to an aggregated score chip. */
+export function AgreementChip({ panel }: { panel: PanelScore }) {
+  const agree = panel.agreement;
+  const unanimous = agree.binary_unanimous;
+  const stdev = agree.geval_stdev ?? 0;
+  const tone =
+    unanimous && stdev < 0.8
+      ? { cls: "bg-emerald-100 text-emerald-800", label: "agree" }
+      : !unanimous && stdev > 1.5
+      ? { cls: "bg-red-100 text-red-700", label: "split" }
+      : { cls: "bg-amber-100 text-amber-800", label: "mixed" };
+  const tooltip =
+    `binary_unanimous=${unanimous}` +
+    (agree.kappa_avg !== null ? ` · κ=${agree.kappa_avg.toFixed(2)}` : "") +
+    (agree.geval_stdev !== null ? ` · σ=${agree.geval_stdev.toFixed(2)}` : "");
+  return (
+    <span
+      title={tooltip}
+      className={`inline-flex h-4 items-center rounded px-1 text-[9px] uppercase tracking-wide ${tone.cls}`}
+    >
+      {tone.label}
+    </span>
+  );
+}
+
+/** Stack of three per-judge mini-bars under an axis cell. */
+export function JudgeStack({ judges }: { judges: JudgeOpinion[] }) {
+  return (
+    <ul className="space-y-1">
+      {judges.map((j) => {
+        const short = j.judge_id.split("/").slice(-1)[0];
+        const score = typeof j.score === "number" ? j.score.toFixed(1) : "—";
+        return (
+          <li key={j.judge_id} className="rounded border border-neutral-200 bg-neutral-50 px-2 py-1 text-[11px]">
+            <div className="flex items-center justify-between gap-2">
+              <span className="font-mono text-[10px] text-neutral-600">{short}</span>
+              <span className="flex items-center gap-1">
+                {j.status === "judge_failed" && (
+                  <span className="rounded bg-red-100 px-1 text-[9px] uppercase text-red-700">fail</span>
+                )}
+                <ScoreChip value={typeof j.score === "number" ? j.score : null} />
+              </span>
+            </div>
+            {j.verdict_path.length > 0 && (
+              <p className="mt-1 truncate font-mono text-[9px] text-neutral-500" title={j.verdict_path.join(" → ")}>
+                {j.verdict_path.join(" → ")}
+              </p>
+            )}
+            {j.node_outputs.some((n) => n.reason) && (
+              <p className="mt-1 text-[10px] leading-snug text-neutral-700">
+                {j.node_outputs.find((n) => n.reason)?.reason}
+              </p>
+            )}
+          </li>
+        );
+      })}
+    </ul>
   );
 }
 

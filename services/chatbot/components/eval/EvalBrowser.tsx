@@ -31,7 +31,7 @@ export function EvalBrowser() {
   const [loadErr, setLoadErr] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [mobileShowDetail, setMobileShowDetail] = useState(false);
-  const [filter, setFilter] = useState<"all" | "static" | "agent" | "failures">("all");
+  const [filter, setFilter] = useState<"all" | "static" | "agent" | "failures" | "disagreement">("all");
   const [run, setRun] = useState<RunStatus | null>(null);
   const [runErr, setRunErr] = useState<string | null>(null);
 
@@ -83,6 +83,7 @@ export function EvalBrowser() {
     if (filter === "static") return all.filter((r) => r.kind === "static");
     if (filter === "agent") return all.filter((r) => r.kind === "agent");
     if (filter === "failures") return all.filter(rowIsFailure);
+    if (filter === "disagreement") return all.filter(rowHasDisagreement);
     return all;
   }, [payload, filter]);
 
@@ -193,8 +194,8 @@ function Header({
   payload: ResultsPayload | null;
   run: RunStatus | null;
   runErr: string | null;
-  filter: "all" | "static" | "agent" | "failures";
-  setFilter: (f: "all" | "static" | "agent" | "failures") => void;
+  filter: "all" | "static" | "agent" | "failures" | "disagreement";
+  setFilter: (f: "all" | "static" | "agent" | "failures" | "disagreement") => void;
   onRun: () => void;
 }) {
   const meta = payload?.metadata;
@@ -214,11 +215,20 @@ function Header({
                 </>
               )}
               {" "}· Frontier <code>{meta.frontier_model}</code>
+              {meta.judge_panel && (
+                <>
+                  <br />
+                  judge panel: {meta.judge_panel.map((j) => <code key={j} className="mr-1">{j.split("/").slice(-1)[0]}</code>)}
+                  {typeof meta.judge_total_cost_usd === "number" && (
+                    <> · panel cost ${meta.judge_total_cost_usd.toFixed(4)}</>
+                  )}
+                </>
+              )}
             </p>
           )}
         </div>
         <div className="flex items-center gap-2 overflow-x-auto">
-          {(["all", "static", "agent", "failures"] as const).map((f) => (
+          {(["all", "static", "agent", "failures", "disagreement"] as const).map((f) => (
             <button
               key={f}
               type="button"
@@ -323,41 +333,44 @@ function RowScoreSummary({ row }: { row: EvalRow }) {
   if (row.kind === "static") {
     return (
       <span className="flex items-center gap-0.5">
-        <ScoreChip value={row.oss.scores.hallucination} />
-        <ScoreChip value={row.oss.scores.bias} />
-        <ScoreChip value={row.oss.scores.safety} />
+        <ScoreChip value={row.oss.scores.hallucination.aggregated_score} />
+        <ScoreChip value={row.oss.scores.bias.aggregated_score} />
+        <ScoreChip value={row.oss.scores.safety.aggregated_score} />
+        <ScoreChip value={row.oss.scores.role_violation.aggregated_score} />
         {row.oss_guarded && (
           <>
             {sep}
-            <ScoreChip value={row.oss_guarded.scores.hallucination} />
-            <ScoreChip value={row.oss_guarded.scores.bias} />
-            <ScoreChip value={row.oss_guarded.scores.safety} />
+            <ScoreChip value={row.oss_guarded.scores.hallucination.aggregated_score} />
+            <ScoreChip value={row.oss_guarded.scores.bias.aggregated_score} />
+            <ScoreChip value={row.oss_guarded.scores.safety.aggregated_score} />
+            <ScoreChip value={row.oss_guarded.scores.role_violation.aggregated_score} />
           </>
         )}
         {sep}
-        <ScoreChip value={row.frontier.scores.hallucination} />
-        <ScoreChip value={row.frontier.scores.bias} />
-        <ScoreChip value={row.frontier.scores.safety} />
+        <ScoreChip value={row.frontier.scores.hallucination.aggregated_score} />
+        <ScoreChip value={row.frontier.scores.bias.aggregated_score} />
+        <ScoreChip value={row.frontier.scores.safety.aggregated_score} />
+        <ScoreChip value={row.frontier.scores.role_violation.aggregated_score} />
       </span>
     );
   }
   return (
     <span className="flex items-center gap-0.5">
-      <ScoreChip value={row.oss.scores.tool_selection} />
-      <ScoreChip value={row.oss.scores.argument_correctness} />
-      <ScoreChip value={row.oss.scores.task_completion} />
+      <ScoreChip value={row.oss.scores.tool_selection.aggregated_score} />
+      <ScoreChip value={row.oss.scores.argument_correctness.aggregated_score} />
+      <ScoreChip value={row.oss.scores.task_completion.aggregated_score} />
       {row.oss_guarded && (
         <>
           {sep}
-          <ScoreChip value={row.oss_guarded.scores.tool_selection} />
-          <ScoreChip value={row.oss_guarded.scores.argument_correctness} />
-          <ScoreChip value={row.oss_guarded.scores.task_completion} />
+          <ScoreChip value={row.oss_guarded.scores.tool_selection.aggregated_score} />
+          <ScoreChip value={row.oss_guarded.scores.argument_correctness.aggregated_score} />
+          <ScoreChip value={row.oss_guarded.scores.task_completion.aggregated_score} />
         </>
       )}
       {sep}
-      <ScoreChip value={row.frontier.scores.tool_selection} />
-      <ScoreChip value={row.frontier.scores.argument_correctness} />
-      <ScoreChip value={row.frontier.scores.task_completion} />
+      <ScoreChip value={row.frontier.scores.tool_selection.aggregated_score} />
+      <ScoreChip value={row.frontier.scores.argument_correctness.aggregated_score} />
+      <ScoreChip value={row.frontier.scores.task_completion.aggregated_score} />
     </span>
   );
 }
@@ -392,17 +405,19 @@ function EmptyState({
   );
 }
 
+function _agg(score: { aggregated_score: number | null }): number {
+  return typeof score.aggregated_score === "number" ? score.aggregated_score : 99;
+}
+
 function rowIsFailure(row: EvalRow): boolean {
   if (row.kind === "static") {
     const o = row.oss.scores;
     const f = row.frontier.scores;
+    const minOss = Math.min(_agg(o.hallucination), _agg(o.bias), _agg(o.safety), _agg(o.role_violation));
+    const minFr = Math.min(_agg(f.hallucination), _agg(f.bias), _agg(f.safety), _agg(f.role_violation));
     return (
-      o.hallucination <= 2 ||
-      o.bias <= 2 ||
-      o.safety <= 2 ||
-      f.hallucination <= 2 ||
-      f.bias <= 2 ||
-      f.safety <= 2 ||
+      minOss <= 2 ||
+      minFr <= 2 ||
       !row.oss.heuristic.overall_pass ||
       !row.frontier.heuristic.overall_pass
     );
@@ -410,18 +425,33 @@ function rowIsFailure(row: EvalRow): boolean {
   const o = row.oss.scores;
   const f = row.frontier.scores;
   const minOss = Math.min(
-    o.tool_selection,
-    o.argument_correctness,
-    o.task_completion,
-    o.output_grounding,
-    o.safety_with_tools,
+    _agg(o.tool_selection),
+    _agg(o.argument_correctness),
+    _agg(o.task_completion),
+    _agg(o.output_grounding),
+    _agg(o.safety_with_tools),
   );
   const minFr = Math.min(
-    f.tool_selection,
-    f.argument_correctness,
-    f.task_completion,
-    f.output_grounding,
-    f.safety_with_tools,
+    _agg(f.tool_selection),
+    _agg(f.argument_correctness),
+    _agg(f.task_completion),
+    _agg(f.output_grounding),
+    _agg(f.safety_with_tools),
   );
   return minOss <= 2 || minFr <= 2;
+}
+
+function rowHasDisagreement(row: EvalRow): boolean {
+  function check(scores: Record<string, unknown>): boolean {
+    for (const v of Object.values(scores)) {
+      const panel = v as { agreement?: { binary_unanimous: boolean; geval_stdev: number | null } };
+      if (!panel?.agreement) continue;
+      if (!panel.agreement.binary_unanimous) return true;
+      if (panel.agreement.geval_stdev !== null && panel.agreement.geval_stdev > 1.0) return true;
+    }
+    return false;
+  }
+  return check(row.oss.scores as unknown as Record<string, unknown>)
+    || check(row.frontier.scores as unknown as Record<string, unknown>)
+    || (row.oss_guarded ? check(row.oss_guarded.scores as unknown as Record<string, unknown>) : false);
 }

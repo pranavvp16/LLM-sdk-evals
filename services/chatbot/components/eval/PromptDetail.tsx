@@ -1,7 +1,8 @@
 /**
  * Right-pane detail view for a single eval row. Renders OSS and Frontier
- * side-by-side with response/trajectory, heuristic checklist, judge scores,
- * latency and cost.
+ * side-by-side with response/trajectory, heuristic checklist, the
+ * 3-judge DAG panel per axis (aggregated chip + expandable stack), and
+ * cost / latency.
  */
 
 "use client";
@@ -11,28 +12,38 @@ import { useState } from "react";
 import type {
   AgentRow,
   AgentScores,
+  PanelScore,
   StaticRow,
   StaticScores,
   Trajectory,
   StaticSide,
 } from "../../lib/eval-types";
-import { CategoryBadge, HeuristicChecklist, ScoreChip, formatCost, formatLatency } from "./shared";
+import {
+  AgreementChip,
+  CategoryBadge,
+  HeuristicChecklist,
+  JudgeStack,
+  ScoreChip,
+  formatCost,
+  formatLatency,
+} from "./shared";
 import { TrajectoryView } from "./TrajectoryView";
 
 type EvalRow = StaticRow | AgentRow;
 
 const STATIC_AXES: { key: keyof StaticScores; label: string }[] = [
-  { key: "hallucination", label: "Halluc" },
-  { key: "bias", label: "Bias" },
-  { key: "safety", label: "Safety" },
+  { key: "hallucination",  label: "Halluc" },
+  { key: "bias",           label: "Bias" },
+  { key: "safety",         label: "Safety" },
+  { key: "role_violation", label: "Role" },
 ];
 
 const AGENT_AXES: { key: keyof AgentScores; label: string }[] = [
-  { key: "tool_selection", label: "Tool sel" },
+  { key: "tool_selection",       label: "Tool sel" },
   { key: "argument_correctness", label: "Args" },
-  { key: "task_completion", label: "Complete" },
-  { key: "output_grounding", label: "Ground" },
-  { key: "safety_with_tools", label: "Safety" },
+  { key: "task_completion",      label: "Complete" },
+  { key: "output_grounding",     label: "Ground" },
+  { key: "safety_with_tools",    label: "Safety" },
 ];
 
 export function PromptDetail({ row }: { row: EvalRow }) {
@@ -87,6 +98,9 @@ function SidePanel({ row, side }: { row: EvalRow; side: SideKey }) {
   if (!data) return null;
   const isAgent = row.kind === "agent";
   const model = isAgent ? (data as Trajectory).model : "";
+  const axes = isAgent ? AGENT_AXES : STATIC_AXES;
+  const scores = data.scores as StaticScores | AgentScores;
+
   return (
     <div className="flex flex-col overflow-auto">
       <header className="sticky top-0 z-10 border-b border-neutral-200 bg-white px-4 py-2">
@@ -100,25 +114,17 @@ function SidePanel({ row, side }: { row: EvalRow; side: SideKey }) {
           </span>
         </div>
         <div className="mt-1 flex flex-wrap gap-2">
-          {isAgent
-            ? AGENT_AXES.map((a) => (
-                <span key={a.key} className="flex items-center gap-1 text-[11px] text-neutral-600">
-                  {a.label}{" "}
-                  <ScoreChip
-                    value={(data as Trajectory).scores[a.key] as number}
-                    label={a.label}
-                  />
-                </span>
-              ))
-            : STATIC_AXES.map((a) => (
-                <span key={a.key} className="flex items-center gap-1 text-[11px] text-neutral-600">
-                  {a.label}{" "}
-                  <ScoreChip
-                    value={(data as StaticSide).scores[a.key] as number}
-                    label={a.label}
-                  />
-                </span>
-              ))}
+          {axes.map((a) => {
+            const panel = scores[a.key as keyof typeof scores] as PanelScore | undefined;
+            if (!panel) return null;
+            return (
+              <span key={String(a.key)} className="flex items-center gap-1 text-[11px] text-neutral-600">
+                {a.label}{" "}
+                <ScoreChip value={panel.aggregated_score} label={a.label} />
+                <AgreementChip panel={panel} />
+              </span>
+            );
+          })}
         </div>
       </header>
 
@@ -144,11 +150,15 @@ function SidePanel({ row, side }: { row: EvalRow; side: SideKey }) {
 
         <section>
           <h4 className="mb-1 text-[10px] uppercase tracking-wide text-neutral-400">
-            Judge rationale
+            Judge panel — per axis
           </h4>
-          <p className="whitespace-pre-wrap text-xs text-neutral-700">
-            {data.scores.rationale || "—"}
-          </p>
+          <div className="space-y-2">
+            {axes.map((a) => {
+              const panel = scores[a.key as keyof typeof scores] as PanelScore | undefined;
+              if (!panel) return null;
+              return <AxisPanelBlock key={String(a.key)} axisLabel={a.label} panel={panel} />;
+            })}
+          </div>
         </section>
 
         {isAgent && (
@@ -160,6 +170,57 @@ function SidePanel({ row, side }: { row: EvalRow; side: SideKey }) {
           </section>
         )}
       </div>
+    </div>
+  );
+}
+
+function AxisPanelBlock({ axisLabel, panel }: { axisLabel: string; panel: PanelScore }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="rounded border border-neutral-200">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="flex w-full items-center justify-between gap-2 px-2 py-1 text-left text-xs hover:bg-neutral-50"
+      >
+        <span className="flex items-center gap-2">
+          <span className="text-neutral-500">{open ? "▾" : "▸"}</span>
+          <span className="font-medium text-neutral-700">{axisLabel}</span>
+          <ScoreChip value={panel.aggregated_score} />
+          <AgreementChip panel={panel} />
+          {panel.category_majority && panel.category_majority !== "none" && (
+            <span className="rounded bg-purple-100 px-1 text-[9px] uppercase tracking-wide text-purple-800">
+              {panel.category_majority}
+            </span>
+          )}
+          {panel.toxicity_flagged && (
+            <span className="rounded bg-red-100 px-1 text-[9px] uppercase tracking-wide text-red-700">toxic</span>
+          )}
+          {panel.violations && panel.violations.length > 0 && (
+            <span className="rounded bg-rose-100 px-1 text-[9px] uppercase tracking-wide text-rose-700">
+              {panel.violations.length} violation{panel.violations.length === 1 ? "" : "s"}
+            </span>
+          )}
+        </span>
+        <span className="text-[10px] text-neutral-400">{panel.judges.length} judges</span>
+      </button>
+      {open && (
+        <div className="border-t border-neutral-200 p-2">
+          {panel.violations && panel.violations.length > 0 && (
+            <p className="mb-2 text-[10px] text-neutral-600">
+              <span className="font-medium">Triggered categories:</span>{" "}
+              <code>{panel.violations.join(", ")}</code>
+            </p>
+          )}
+          {panel.llamaguard_pre_signal && (
+            <p className="mb-2 text-[10px] text-neutral-600">
+              <span className="font-medium">Llama Guard pre-signal:</span>{" "}
+              <code>{panel.llamaguard_pre_signal}</code>
+            </p>
+          )}
+          <JudgeStack judges={panel.judges} />
+        </div>
+      )}
     </div>
   );
 }
