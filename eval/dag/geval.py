@@ -103,8 +103,16 @@ async def _generate_eval_steps(
     model: ModelDef,
     criteria: str,
     rubric: dict[int, str],
-) -> list[str] | None:
-    """One CoT call to materialize ordered evaluation steps."""
+    *,
+    conversation_id: str,
+) -> tuple[list[str] | None, dict[str, float]]:
+    """One CoT call to materialize ordered evaluation steps.
+
+    Returns (steps, usage). ``usage`` always contains
+    ``{input_tokens, output_tokens, cost_usd, latency_ms}`` summed across
+    however many retries were needed — even on terminal failure we charge
+    the partial token spend. Caller folds this into the leaf's NodeOutput.
+    """
     prompt = _EVAL_STEPS_PROMPT.format(criteria=criteria, rubric=_rubric_block(rubric))
     ctx = Context(
         system_prompt="You design evaluation rubrics. Respond ONLY with a JSON list.",
@@ -112,14 +120,22 @@ async def _generate_eval_steps(
         temperature=_judge_temperature(model),
         max_tokens=800,
     )
+    usage = {"input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0, "latency_ms": 0.0}
     for attempt in range(_MAX_RETRIES):
+        t0 = time.perf_counter()
         try:
             msg = await wrapper.complete(
-                model, ctx, session_id="eval-dag", conversation_id="geval-steps"
+                model, ctx, session_id="eval-dag", conversation_id=conversation_id,
             )
         except Exception as e:  # noqa: BLE001
+            usage["latency_ms"] += (time.perf_counter() - t0) * 1000.0
             logger.warning("eval-steps call failed (attempt %d): %s", attempt, e)
             continue
+        usage["latency_ms"] += (time.perf_counter() - t0) * 1000.0
+        usage["input_tokens"] += msg.usage.input_tokens
+        usage["output_tokens"] += msg.usage.output_tokens
+        usage["cost_usd"] += msg.usage.cost_usd(model)
+
         raw = _extract_text(msg)
         # JSON list — match [...] specifically, not the generic { } regex
         m = re.search(r"\[.*\]", raw, re.DOTALL)
@@ -131,8 +147,8 @@ async def _generate_eval_steps(
         except json.JSONDecodeError:
             continue
         if isinstance(data, list) and all(isinstance(s, str) for s in data):
-            return data[:6]
-    return None
+            return data[:6], usage
+    return None, usage
 
 
 async def score_leaf(
@@ -142,27 +158,38 @@ async def score_leaf(
     case: dict,
     *,
     cache: dict[tuple[str, str], list[str]] | None = None,
+    conversation_id: str = "geval",
 ):
-    """Score one G-Eval leaf. Returns a NodeOutput-compatible object."""
+    """Score one G-Eval leaf. Returns a NodeOutput-compatible object.
+
+    Token + cost accounting includes BOTH the eval-steps generation call
+    (cache miss only) AND the scoring call. Steps usage is zero when the
+    cache hits — that's the correct accounting.
+    """
     from eval.dag.executor import NodeOutput  # avoid circular import at module load
 
     judge = _judge_id(model)
     key = (judge, leaf.criteria)
     t0 = time.perf_counter()
 
+    steps_usage = {"input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0, "latency_ms": 0.0}
     steps: list[str] | None = None
-    steps_in = steps_out = 0
-    steps_cost = 0.0
     if cache is not None and key in cache:
         steps = cache[key]
     else:
-        steps = await _generate_eval_steps(wrapper, model, leaf.criteria, leaf.rubric)
+        steps, steps_usage = await _generate_eval_steps(
+            wrapper, model, leaf.criteria, leaf.rubric,
+            conversation_id=f"{conversation_id}-steps",
+        )
         if steps is None:
             return NodeOutput(
                 node=leaf.name,
                 score=None,
                 reason="eval-steps generation failed",
                 latency_ms=(time.perf_counter() - t0) * 1000.0,
+                input_tokens=steps_usage["input_tokens"],
+                output_tokens=steps_usage["output_tokens"],
+                cost_usd=steps_usage["cost_usd"],
             )
         if cache is not None:
             cache[key] = steps
@@ -184,14 +211,21 @@ async def score_leaf(
     )
 
     last_raw = ""
+    scoring_usage = {"input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0}
     for attempt in range(_MAX_RETRIES):
         try:
             msg = await wrapper.complete(
-                model, ctx, session_id="eval-dag", conversation_id="geval-score"
+                model, ctx, session_id="eval-dag",
+                conversation_id=f"{conversation_id}-score",
             )
         except Exception as e:  # noqa: BLE001
             logger.warning("geval score call failed (attempt %d): %s", attempt, e)
             continue
+        # Track partial-spend even on parse retries
+        scoring_usage["input_tokens"] += msg.usage.input_tokens
+        scoring_usage["output_tokens"] += msg.usage.output_tokens
+        scoring_usage["cost_usd"] += msg.usage.cost_usd(model)
+
         last_raw = _extract_text(msg)
         m = _JSON_RE.search(last_raw)
         if not m:
@@ -207,15 +241,14 @@ async def score_leaf(
             continue
         raw_score = max(0, min(10, raw_score))
         score_05 = raw_score / 2.0  # 0-10 → 0-5
-        usage = msg.usage
         return NodeOutput(
             node=leaf.name,
             score=score_05,
             reason=str(parsed.get("reason", "")),
             latency_ms=(time.perf_counter() - t0) * 1000.0,
-            input_tokens=usage.input_tokens + steps_in,
-            output_tokens=usage.output_tokens + steps_out,
-            cost_usd=usage.cost_usd(model) + steps_cost,
+            input_tokens=scoring_usage["input_tokens"] + steps_usage["input_tokens"],
+            output_tokens=scoring_usage["output_tokens"] + steps_usage["output_tokens"],
+            cost_usd=scoring_usage["cost_usd"] + steps_usage["cost_usd"],
         )
 
     return NodeOutput(
@@ -223,4 +256,7 @@ async def score_leaf(
         score=None,
         reason=f"geval score parse failed: {last_raw[:120]!r}",
         latency_ms=(time.perf_counter() - t0) * 1000.0,
+        input_tokens=scoring_usage["input_tokens"] + steps_usage["input_tokens"],
+        output_tokens=scoring_usage["output_tokens"] + steps_usage["output_tokens"],
+        cost_usd=scoring_usage["cost_usd"] + steps_usage["cost_usd"],
     )

@@ -98,6 +98,30 @@ def _parse_json(text: str) -> dict | None:
         return None
 
 
+def _coerce_bool(v: object) -> bool | None:
+    """Robust truthiness coercion for LLM-emitted binary verdicts.
+
+    Returns None when the input cannot be unambiguously interpreted — caller
+    treats that as a parse failure and retries.
+
+    Important: ``bool(verdict)`` is wrong because non-empty strings like
+    ``"false"`` evaluate truthy. LLMs often return string booleans even when
+    asked for JSON true/false.
+    """
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, (int, float)):
+        return v != 0
+    if isinstance(v, str):
+        s = v.strip().lower()
+        if s in ("true", "1", "yes", "t"):
+            return True
+        if s in ("false", "0", "no", "f"):
+            return False
+        return None
+    return None
+
+
 def _render(prompt: str, case: dict) -> str:
     """Format the node prompt with the case dict, tolerating missing keys."""
     class _SafeDict(dict):
@@ -128,6 +152,7 @@ async def _call_judge(
     prompt: str,
     *,
     max_tokens: int,
+    conversation_id: str,
     system: str = "You are an impartial evaluator. Respond ONLY with JSON.",
 ) -> tuple[AssistantMessage | None, float]:
     """Single judge call, returns (message_or_None_on_error, latency_ms)."""
@@ -140,7 +165,7 @@ async def _call_judge(
     t0 = time.perf_counter()
     try:
         msg = await wrapper.complete(
-            model, ctx, session_id="eval-dag", conversation_id=f"axis-{model.id}"
+            model, ctx, session_id="eval-dag", conversation_id=conversation_id
         )
     except Exception as e:  # noqa: BLE001
         logger.warning("judge call failed: %s/%s: %s", model.provider, model.id, e)
@@ -153,11 +178,15 @@ async def _resolve_branch_node(
     wrapper: LLMWrapper,
     model: ModelDef,
     case: dict,
+    *,
+    conversation_id: str,
 ) -> tuple[NodeOutput | None, str | None]:
     """Run one branch node, return (NodeOutput, next_target). next_target is None on failure."""
     rendered = _render(node.prompt, case)
     for attempt in range(_MAX_RETRIES):
-        msg, latency_ms = await _call_judge(wrapper, model, rendered, max_tokens=600)
+        msg, latency_ms = await _call_judge(
+            wrapper, model, rendered, max_tokens=600, conversation_id=conversation_id,
+        )
         if msg is None:
             continue
         raw = _extract_text(msg)
@@ -168,32 +197,48 @@ async def _resolve_branch_node(
             )
             continue
 
-        verdict = parsed["verdict"]
+        raw_verdict = parsed["verdict"]
         reason = str(parsed.get("reason", ""))
         usage = msg.usage
+
+        if isinstance(node, BinaryNode):
+            verdict_bool = _coerce_bool(raw_verdict)
+            if verdict_bool is None:
+                logger.warning(
+                    "node %s: ambiguous binary verdict %r on attempt %d",
+                    node.name, raw_verdict, attempt,
+                )
+                continue
+            out = NodeOutput(
+                node=node.name,
+                verdict=verdict_bool,         # canonical bool — keeps κ + aggregation honest
+                reason=reason,
+                latency_ms=latency_ms,
+                input_tokens=usage.input_tokens,
+                output_tokens=usage.output_tokens,
+                cost_usd=usage.cost_usd(model),
+            )
+            target = node.on_true if verdict_bool else node.on_false
+            return out, target
+
+        # NonBinary: verdict is a label string
+        label = str(raw_verdict).strip().lower()
+        target = node.branches.get(label)
+        if target is None:
+            logger.warning(
+                "node %s: unknown branch label %r (allowed: %s)",
+                node.name, label, list(node.branches.keys()),
+            )
+            continue
         out = NodeOutput(
             node=node.name,
-            verdict=verdict,
+            verdict=label,
             reason=reason,
             latency_ms=latency_ms,
             input_tokens=usage.input_tokens,
             output_tokens=usage.output_tokens,
             cost_usd=usage.cost_usd(model),
         )
-
-        if isinstance(node, BinaryNode):
-            target = node.on_true if bool(verdict) else node.on_false
-            return out, target
-        # NonBinary: verdict is a label string
-        label = str(verdict).strip().lower()
-        target = node.branches.get(label)
-        if target is None:
-            # Unknown label — try once more
-            logger.warning(
-                "node %s: unknown branch label %r (allowed: %s)",
-                node.name, label, list(node.branches.keys()),
-            )
-            continue
         return out, target
 
     return None, None
@@ -206,9 +251,18 @@ async def run_axis(
     wrapper: LLMWrapper,
     geval_cache: dict[tuple[str, str], list[str]] | None = None,
 ) -> JudgeAxisResult:
-    """Traverse the DAG for a single judge; return per-judge result."""
+    """Traverse the DAG for a single judge; return per-judge result.
+
+    Per-call ``conversation_id`` is derived from the case's ``prompt_id`` (if
+    set), the axis name, the judge id, and the node name — so every judge
+    call gets its own ingestion-log conversation rather than collapsing the
+    whole run into one row per judge.
+    """
     result = JudgeAxisResult(judge_id=_judge_id(judge_model), score=None)
     current = dag.entry
+
+    prompt_id = str(case.get("prompt_id") or case.get("id") or "p?")
+    convo_prefix = f"eval-{prompt_id}-{dag.axis_name}-{judge_model.id}"
 
     while True:
         if current.startswith("verdict:"):
@@ -222,7 +276,9 @@ async def run_axis(
 
         if isinstance(node, GEvalLeaf):
             leaf_out = await score_leaf(
-                node, wrapper, judge_model, case, cache=geval_cache,
+                node, wrapper, judge_model, case,
+                cache=geval_cache,
+                conversation_id=f"{convo_prefix}-{node.name}",
             )
             result.node_outputs.append(leaf_out)
             result.latency_ms += leaf_out.latency_ms
@@ -238,7 +294,10 @@ async def run_axis(
             return result
 
         # Branch node (Binary / NonBinary)
-        out, target = await _resolve_branch_node(node, wrapper, judge_model, case)
+        out, target = await _resolve_branch_node(
+            node, wrapper, judge_model, case,
+            conversation_id=f"{convo_prefix}-{node.name}",
+        )
         if out is None or target is None:
             result.status = "judge_failed"
             result.error = f"branch node {node.name} failed"
@@ -248,9 +307,9 @@ async def run_axis(
         result.input_tokens += out.input_tokens
         result.output_tokens += out.output_tokens
         result.cost_usd += out.cost_usd
-        verdict_label = (
-            "T" if isinstance(node, BinaryNode) and bool(out.verdict) else
-            "F" if isinstance(node, BinaryNode) else str(out.verdict)
-        )
+        if isinstance(node, BinaryNode):
+            verdict_label = "T" if out.verdict is True else "F"
+        else:
+            verdict_label = str(out.verdict)
         result.verdict_path.append(f"{node.name}:{verdict_label}")
         current = target

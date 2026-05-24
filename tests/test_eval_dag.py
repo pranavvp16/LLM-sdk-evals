@@ -198,3 +198,85 @@ def test_mean_pairwise_kappa():
     k = mean_pairwise_kappa(raters)
     # pairs: (1,2)=0.5, (1,3)=1.0, (2,3)=0.5 → mean ≈ 0.667
     assert k == pytest.approx((0.5 + 1.0 + 0.5) / 3)
+
+
+@pytest.mark.asyncio
+async def test_binary_node_string_false_takes_false_branch():
+    """Regression for PR#13 Codex P1: `bool("false")` is truthy in Python.
+
+    The executor must coerce string-valued verdicts to actual bools before
+    branching, or the false-branch is never reached when a judge returns
+    `"verdict": "false"` instead of JSON `false`.
+    """
+    dag = _make_binary_dag()
+    wrapper = FakeJudgeWrapper({
+        "claude-sonnet-4-6": [{"verdict": "false", "reason": "stringly typed"}],
+    })
+    result = await run_axis(dag, get_model(*SONNET), {"prompt": "p", "response": "r"}, wrapper)  # type: ignore[arg-type]
+    assert result.score == 0.0
+    assert result.verdict_path == ["root:F", "verdict:bad=0.0"]
+
+
+@pytest.mark.asyncio
+async def test_binary_node_ambiguous_verdict_retries_then_fails():
+    """A verdict like 'maybe' is not coercible — node should retry and fail clean."""
+    dag = _make_binary_dag()
+    wrapper = FakeJudgeWrapper({
+        "claude-sonnet-4-6": [
+            {"verdict": "maybe", "reason": "1"},
+            {"verdict": "kinda", "reason": "2"},
+            {"verdict": "i guess", "reason": "3"},
+        ],
+    })
+    result = await run_axis(dag, get_model(*SONNET), {"prompt": "p", "response": "r"}, wrapper)  # type: ignore[arg-type]
+    assert result.status == "judge_failed"
+    assert result.score is None
+
+
+@pytest.mark.asyncio
+async def test_geval_leaf_cost_includes_steps_generation():
+    """Regression for PR#13 Greptile P1: step-gen tokens were silently dropped.
+
+    Cache-cold path must add step-gen usage to the leaf NodeOutput.
+    """
+    dag = _make_geval_dag()
+    wrapper = FakeJudgeWrapper({
+        "claude-sonnet-4-6": [
+            ["step 1", "step 2", "step 3"],          # steps-gen call
+            {"score": 8, "reason": "ok"},             # scoring call
+        ],
+    })
+    result = await run_axis(
+        dag, get_model(*SONNET), {"prompt": "p", "response": "r"}, wrapper,  # type: ignore[arg-type]
+        geval_cache={},
+    )
+    assert result.status == "success"
+    # FakeJudgeWrapper bills 10 input + 20 output per call; 2 calls expected
+    # → 20 input, 40 output. Pre-fix, only the scoring call (10/20) showed up.
+    leaf = result.node_outputs[0]
+    assert leaf.input_tokens == 20
+    assert leaf.output_tokens == 40
+    # Cost > 0 because Sonnet has non-zero pricing
+    assert leaf.cost_usd > 0
+
+
+@pytest.mark.asyncio
+async def test_geval_leaf_cache_hit_skips_steps_generation():
+    """Cached steps → no steps-gen call → only the scoring call's tokens count."""
+    dag = _make_geval_dag()
+    cache: dict = {
+        (f"{SONNET[0]}/{SONNET[1]}", "Is the response thoughtful?"): ["pre-cached step"],
+    }
+    wrapper = FakeJudgeWrapper({
+        "claude-sonnet-4-6": [
+            {"score": 6, "reason": "cached path"},    # scoring only
+        ],
+    })
+    result = await run_axis(
+        dag, get_model(*SONNET), {"prompt": "p", "response": "r"}, wrapper,  # type: ignore[arg-type]
+        geval_cache=cache,
+    )
+    assert result.score == 3.0   # 6 / 2
+    leaf = result.node_outputs[0]
+    assert leaf.input_tokens == 10   # just the scoring call
+    assert leaf.output_tokens == 20

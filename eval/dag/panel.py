@@ -69,21 +69,41 @@ def _verdict_key_of(path: list[str]) -> str:
 
 
 def _binary_node_verdicts(judges: list[JudgeAxisResult]) -> dict[str, list[bool]]:
-    """For each binary node visited by ALL surviving judges, collect their booleans."""
+    """For each binary node visited by ALL surviving judges, collect their booleans.
+
+    Defensive: the executor normalises verdicts to ``bool`` before storing
+    them, but coerce here too so the κ rollup doesn't silently drop nodes
+    if the executor ever returns ``"true"``/``"false"`` / ``1``/``0``.
+    """
+    def _as_bool(v: object) -> bool | None:
+        if isinstance(v, bool):
+            return v
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            return v != 0
+        if isinstance(v, str):
+            s = v.strip().lower()
+            if s in ("true", "1", "yes", "t"):
+                return True
+            if s in ("false", "0", "no", "f"):
+                return False
+        return None
+
     by_node: dict[str, list[bool]] = {}
     if not judges:
         return by_node
-    node_sets = [
-        {n.node: n.verdict for n in j.node_outputs if isinstance(n.verdict, bool)}
-        for j in judges
-    ]
+    node_sets: list[dict[str, bool]] = []
+    for j in judges:
+        per_judge: dict[str, bool] = {}
+        for n in j.node_outputs:
+            b = _as_bool(n.verdict)
+            if b is not None:
+                per_judge[n.node] = b
+        node_sets.append(per_judge)
     common = set(node_sets[0].keys())
     for s in node_sets[1:]:
         common &= set(s.keys())
     for node in common:
-        verdicts = [s[node] for s in node_sets]
-        if all(isinstance(v, bool) for v in verdicts):
-            by_node[node] = list(verdicts)
+        by_node[node] = [s[node] for s in node_sets]
     return by_node
 
 

@@ -265,6 +265,7 @@ async def _score_side_l2(
     if side.get("status") == "error":
         return {axis: _failed_axis(axis) for axis, _, _ in L2_AXES}
     case = {
+        "prompt_id": prompt["id"],
         "prompt": prompt["prompt"],
         "expected": prompt["expected_behavior"],
         "response": side.get("response") or "(empty)",
@@ -285,6 +286,7 @@ async def _score_side_l3(
     if traj_dict.get("status") == "model_error":
         return {axis: _failed_axis(axis) for axis, _, _ in L3_AXES}
     case = {
+        "prompt_id": prompt["id"],
         "prompt": prompt["prompt"],
         "expected": prompt["expected_behavior"],
         "response": traj_dict.get("final_text") or "(empty)",
