@@ -295,7 +295,7 @@ function PromptList({
   onSelect: (id: string) => void;
 }) {
   return (
-    <nav className="overflow-y-auto border-r border-neutral-200 bg-neutral-50">
+    <nav className="h-full overflow-y-auto border-r border-neutral-200 bg-neutral-50">
       {rows.length === 0 ? (
         <p className="p-4 text-xs text-neutral-500">No prompts match this filter.</p>
       ) : (
