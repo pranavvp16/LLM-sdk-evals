@@ -89,10 +89,12 @@ def _failed_axis(axis_name: str) -> dict[str, Any]:
         "aggregated_score": None,
         "verdict_path_majority": [],
         "judges": [],
+        "panel_status": "all_failed",
         "agreement": {
             "binary_unanimous": False,
             "geval_stdev": None,
             "kappa_avg": None,
+            "kappa_status": "undefined",
         },
     }
 
@@ -236,7 +238,7 @@ async def _call_static(
 # ── Scoring (3-judge DAG ensemble) ───────────────────────────────────────
 
 
-GEvalCache = dict[tuple[str, str], list[str]]
+GEvalCache = dict[tuple[str, str, str], list[str]]
 
 
 async def _score_axis(

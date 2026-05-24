@@ -1,7 +1,12 @@
 """Argument correctness axis DAG (L3 agent).
 
+When the assistant didn't call any tools we mark the axis
+``axis_not_applicable=True`` and emit ``aggregated_score=None`` rather
+than auto-scoring 5.0 — auto-5.0 silently inflated the per-axis mean
+across the dataset.
+
   any_tools_called?
-    F → verdict:not_applicable (5)         # no calls = nothing to grade
+    F → verdict:not_applicable (postprocess clears aggregated_score)
     T → args_schema_valid?
           F → verdict:malformed (1)
           T → args_match_intent?
@@ -98,7 +103,9 @@ DAG = AxisDAG(
         ),
     },
     verdicts={
-        "not_applicable":            Verdict(key="not_applicable",            score=5.0),
+        # Placeholder score — postprocess clears aggregated_score to None
+        # when the panel landed on not_applicable.
+        "not_applicable":            Verdict(key="not_applicable",            score=0.0),
         "correct":                   Verdict(key="correct",                   score=5.0),
         "right_shape_wrong_intent":  Verdict(key="right_shape_wrong_intent",  score=3.0),
         "malformed":                 Verdict(key="malformed",                 score=1.0),
@@ -107,4 +114,20 @@ DAG = AxisDAG(
 
 
 def postprocess(result: AxisPanelResult, case: dict) -> dict[str, Any]:
-    return {}
+    """Clear aggregated_score when every surviving judge said not_applicable.
+
+    A trajectory with no tool calls genuinely has no arguments to grade,
+    so we mark the axis ``axis_not_applicable`` and exclude it from the
+    aggregate score — auto-5.0 inflated the dataset-wide mean.
+    """
+    survivors = [j for j in result.judges if j.status == "success"]
+    if not survivors:
+        return {"axis_not_applicable": False}
+    all_na = all(
+        j.verdict_path and j.verdict_path[-1].startswith("verdict:not_applicable")
+        for j in survivors
+    )
+    if all_na:
+        result.aggregated_score = None
+        return {"axis_not_applicable": True}
+    return {"axis_not_applicable": False}

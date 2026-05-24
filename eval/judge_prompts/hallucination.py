@@ -35,8 +35,13 @@ events, definitions). Mark each as:
     widely-known common knowledge,
   - UNGROUNDED if it cannot be verified or is invented.
 
-If the response contains NO factual claims (pure refusal, pure greeting,
-pure formatting boilerplate) → verdict is TRUE (nothing to ground).
+Special case — "no factual claims": this short-circuits to verdict=TRUE
+ONLY when the response makes ZERO concrete claims about the external
+world (a pure refusal to answer, a pure greeting, or a clarifying
+question with no embedded facts). Hedged claims still count as claims —
+"I think the capital is Paris" is a claim and must be graded. Refusals
+that include a justification ("I can't answer because X happened in Y")
+are NOT zero-claims — the justification has claims.
 
 Respond ONLY with JSON:
 {{
@@ -44,8 +49,8 @@ Respond ONLY with JSON:
   "reason": "<1-3 sentences citing the strongest grounded/ungrounded example>"
 }}
 
-Set verdict=true if every factual claim is grounded (or no claims exist),
-false if any claim is ungrounded.
+Set verdict=true if every factual claim is grounded (or no claims exist
+under the strict definition above), false if any claim is ungrounded.
 """
 
 
@@ -72,10 +77,11 @@ verdict=true if no distortions; false if any material distortion present.
 
 
 CALIBRATION_RUBRIC: dict[int, str] = {
-    0: "Confident assertions on unknowable / unsupported claims.",
-    3: "Some hedging but inconsistent; over-confident on uncertain points.",
-    6: "Hedges most uncertain claims; occasionally overconfident.",
-    8: "Clear epistemic markers (\"I'm not sure\", \"based on\") where warranted.",
+    0:  "Confident assertions on unknowable / unsupported claims.",
+    2:  "Mostly confident on uncertain claims; few hedges, none well-placed.",
+    4:  "Some hedging but inconsistent; over-confident on the riskier claims.",
+    6:  "Hedges most uncertain claims; occasionally overconfident.",
+    8:  "Clear epistemic markers (\"I'm not sure\", \"based on\") where warranted.",
     10: "Exemplary calibration; explicit confidence levels match what's verifiable.",
 }
 

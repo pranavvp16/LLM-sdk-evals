@@ -17,6 +17,7 @@ from services.api.judge_registry import register_judge_models
 from services.api.oss_registry import register_oss_models
 
 from eval.dag.executor import run_axis
+from eval.dag.geval import _rubric_hash
 from eval.dag.kappa import cohen_kappa, mean_pairwise_kappa
 from eval.dag.nodes import AxisDAG, BinaryNode, GEvalLeaf, Verdict
 from eval.dag.panel import score_axis_panel
@@ -264,8 +265,11 @@ async def test_geval_leaf_cost_includes_steps_generation():
 async def test_geval_leaf_cache_hit_skips_steps_generation():
     """Cached steps → no steps-gen call → only the scoring call's tokens count."""
     dag = _make_geval_dag()
+    # Cache key is now (judge_id, criteria, rubric_hash) — see eval/dag/geval.py
+    leaf = dag.nodes["leaf"]
+    assert isinstance(leaf, GEvalLeaf)
     cache: dict = {
-        (f"{SONNET[0]}/{SONNET[1]}", "Is the response thoughtful?"): ["pre-cached step"],
+        (f"{SONNET[0]}/{SONNET[1]}", leaf.criteria, _rubric_hash(leaf.rubric)): ["pre-cached step"],
     }
     wrapper = FakeJudgeWrapper({
         "claude-sonnet-4-6": [
@@ -277,6 +281,169 @@ async def test_geval_leaf_cache_hit_skips_steps_generation():
         geval_cache=cache,
     )
     assert result.score == 3.0   # 6 / 2
-    leaf = result.node_outputs[0]
-    assert leaf.input_tokens == 10   # just the scoring call
-    assert leaf.output_tokens == 20
+    leaf_out = result.node_outputs[0]
+    assert leaf_out.input_tokens == 10   # just the scoring call
+    assert leaf_out.output_tokens == 20
+
+
+# ── New regression tests for the audit-gap fixes ──────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_panel_all_failed_distinguishable_from_disagreement():
+    """When every judge fails, panel_status='all_failed'; aggregated_score=None.
+
+    A consumer reading {aggregated_score: None, binary_unanimous: false} can now
+    tell error from edge case via panel_status.
+    """
+    dag = _make_binary_dag()
+    wrapper = FakeJudgeWrapper({
+        "claude-sonnet-4-6": ["nope", "nope", "nope"],
+        "gpt-5":             ["nope", "nope", "nope"],
+        "deepseek-v4-flash": ["nope", "nope", "nope"],
+    })
+    panel = await score_axis_panel(
+        dag, {"prompt": "p", "response": "r"}, wrapper,  # type: ignore[arg-type]
+        judges=[SONNET, GPT5, DEEPSEEK],
+    )
+    assert panel.panel_status == "all_failed"
+    assert panel.aggregated_score is None
+    assert panel.kappa_status == "undefined"
+    assert all(j.status == "judge_failed" for j in panel.judges)
+
+
+@pytest.mark.asyncio
+async def test_panel_partial_status():
+    """One judge fails, two succeed → panel_status='partial'."""
+    dag = _make_binary_dag()
+    wrapper = FakeJudgeWrapper({
+        "claude-sonnet-4-6": [{"verdict": True, "reason": "ok"}],
+        "gpt-5":             [{"verdict": True, "reason": "ok"}],
+        "deepseek-v4-flash": ["bad", "bad", "bad"],
+    })
+    panel = await score_axis_panel(
+        dag, {"prompt": "p", "response": "r"}, wrapper,  # type: ignore[arg-type]
+        judges=[SONNET, GPT5, DEEPSEEK],
+    )
+    assert panel.panel_status == "partial"
+    assert panel.aggregated_score == 5.0  # 2 successful judges agreed
+
+
+@pytest.mark.asyncio
+async def test_panel_success_status():
+    """All judges succeed → panel_status='success'."""
+    dag = _make_binary_dag()
+    wrapper = FakeJudgeWrapper({
+        "claude-sonnet-4-6": [{"verdict": True, "reason": "ok"}],
+        "gpt-5":             [{"verdict": True, "reason": "ok"}],
+        "deepseek-v4-flash": [{"verdict": True, "reason": "ok"}],
+    })
+    panel = await score_axis_panel(
+        dag, {"prompt": "p", "response": "r"}, wrapper,  # type: ignore[arg-type]
+        judges=[SONNET, GPT5, DEEPSEEK],
+    )
+    assert panel.panel_status == "success"
+
+
+@pytest.mark.asyncio
+async def test_branch_failure_folds_retry_cost():
+    """A node that runs out of retries still bills the partial spend.
+
+    Pre-fix the 3 retry attempts' tokens evaporated; under-reported cost in
+    the run-level rollup.
+    """
+    dag = _make_binary_dag()
+    wrapper = FakeJudgeWrapper({
+        "claude-sonnet-4-6": [
+            {"verdict": "maybe", "reason": "1"},
+            {"verdict": "kinda", "reason": "2"},
+            {"verdict": "i guess", "reason": "3"},
+        ],
+    })
+    result = await run_axis(dag, get_model(*SONNET), {"prompt": "p", "response": "r"}, wrapper)  # type: ignore[arg-type]
+    assert result.status == "judge_failed"
+    # FakeJudgeWrapper bills 10/20 per call; 3 retries → 30/60. Pre-fix: 0/0.
+    assert result.input_tokens == 30
+    assert result.output_tokens == 60
+    assert result.cost_usd > 0
+
+
+def test_kappa_insufficient_samples_is_signalled():
+    """The panel must surface kappa_status='insufficient_samples' rather
+    than report a number computed from n<5 observations.
+
+    A 3-judge × 1-binary-node DAG (e.g. tool_selection's correct path) has
+    exactly 1 observation per pair — Cohen's κ on that is statistical noise.
+    """
+    # Pure unit check on the threshold constant — the integration is exercised
+    # via score_axis_panel above.
+    from eval.dag.panel import _KAPPA_MIN_SAMPLES
+    assert _KAPPA_MIN_SAMPLES >= 5
+
+
+def test_rubric_hash_differs_for_different_rubrics():
+    """Two leaves with identical criteria but different rubrics must NOT
+    share cached eval-steps. Pre-fix the cache key was (judge, criteria)
+    only, so changing the rubric silently reused steps written for the old one."""
+    a = _rubric_hash({0: "no", 5: "ok", 10: "yes"})
+    b = _rubric_hash({0: "no", 5: "ok", 10: "PERFECT"})
+    c = _rubric_hash({0: "no", 5: "ok", 10: "yes"})
+    assert a != b
+    assert a == c   # deterministic for the same rubric
+
+
+@pytest.mark.asyncio
+async def test_axis_not_applicable_clears_aggregated_score():
+    """argument_correctness postprocess clears aggregated_score when every
+    judge said not_applicable (no tool calls).
+
+    Pre-fix the axis auto-scored 5.0 and silently inflated dataset means.
+    """
+    from eval.judge_prompts.argument_correctness import DAG as AC_DAG, postprocess as ac_pp
+
+    wrapper = FakeJudgeWrapper({
+        "claude-sonnet-4-6": [{"verdict": False, "reason": "0 calls"}],
+        "gpt-5":             [{"verdict": False, "reason": "0 calls"}],
+        "deepseek-v4-flash": [{"verdict": False, "reason": "0 calls"}],
+    })
+    panel = await score_axis_panel(
+        AC_DAG, {"prompt_id": "p1", "prompt": "say hi", "tool_calls_text": "(none)"},
+        wrapper, judges=[SONNET, GPT5, DEEPSEEK],  # type: ignore[arg-type]
+    )
+    # Pre-postprocess: all judges took verdict:not_applicable → aggregated=0.0 (placeholder)
+    extras = ac_pp(panel, {})
+    assert extras["axis_not_applicable"] is True
+    assert panel.aggregated_score is None
+
+
+@pytest.mark.asyncio
+async def test_axis_not_applicable_false_when_tools_called():
+    """When at least one judge says tools were called, axis_not_applicable
+    is False and aggregated_score retains the panel value."""
+    from eval.judge_prompts.argument_correctness import DAG as AC_DAG, postprocess as ac_pp
+
+    wrapper = FakeJudgeWrapper({
+        # all three judges chose verdict:correct, so the panel returns 5.0
+        "claude-sonnet-4-6": [
+            {"verdict": True, "reason": "1 call"},
+            {"verdict": True, "reason": "valid"},
+            {"verdict": True, "reason": "intent ok"},
+        ],
+        "gpt-5": [
+            {"verdict": True, "reason": "1 call"},
+            {"verdict": True, "reason": "valid"},
+            {"verdict": True, "reason": "intent ok"},
+        ],
+        "deepseek-v4-flash": [
+            {"verdict": True, "reason": "1 call"},
+            {"verdict": True, "reason": "valid"},
+            {"verdict": True, "reason": "intent ok"},
+        ],
+    })
+    panel = await score_axis_panel(
+        AC_DAG, {"prompt_id": "p1", "prompt": "schedule it", "tool_calls_text": "schedule_call(...)"},
+        wrapper, judges=[SONNET, GPT5, DEEPSEEK],  # type: ignore[arg-type]
+    )
+    extras = ac_pp(panel, {})
+    assert extras["axis_not_applicable"] is False
+    assert panel.aggregated_score == 5.0

@@ -21,7 +21,7 @@ import {
   type StaticRow,
 } from "../../lib/eval-types";
 import { PromptDetail } from "./PromptDetail";
-import { CategoryBadge, ScoreChip } from "./shared";
+import { CategoryBadge, ScoreChip, formatCost, formatLatency } from "./shared";
 
 type EvalRow = StaticRow | AgentRow;
 
@@ -135,6 +135,8 @@ export function EvalBrowser() {
         setFilter={setFilter}
         onRun={onRun}
       />
+
+      {payload && <PanelRollups payload={payload} />}
 
       {!payload ? (
         <EmptyState onRun={onRun} runErr={runErr} run={run} />
@@ -403,6 +405,206 @@ function EmptyState({
       {runErr && <p className="text-xs text-red-700">{runErr}</p>}
     </div>
   );
+}
+
+// ── Run-level rollups (judge cost + κ-by-axis + harshness) ────────────────
+
+const STATIC_AXES_KEYS = ["hallucination", "bias", "safety", "role_violation"] as const;
+const AGENT_AXES_KEYS = [
+  "tool_selection", "argument_correctness", "task_completion",
+  "output_grounding", "safety_with_tools",
+] as const;
+
+function PanelRollups({ payload }: { payload: ResultsPayload }) {
+  const meta = payload.metadata;
+  const judgeRows = useMemo(() => {
+    if (!meta.judge_per_judge) return [];
+    return Object.entries(meta.judge_per_judge).map(([id, v]) => ({
+      id,
+      cost: v.cost_usd,
+      latency: v.latency_ms,
+      calls: v.calls,
+    }));
+  }, [meta.judge_per_judge]);
+
+  const kappaRows = useMemo(() => computeKappaRollup(payload), [payload]);
+  const harshness = useMemo(() => computeHarshness(payload), [payload]);
+
+  if (!judgeRows.length && !kappaRows.length && !harshness.length) return null;
+
+  return (
+    <section className="grid grid-cols-1 gap-3 lg:grid-cols-3">
+      {judgeRows.length > 0 && (
+        <RollupCard title="Judge panel spend (per judge)">
+          <table className="w-full text-[11px]">
+            <thead className="text-neutral-500">
+              <tr>
+                <th className="pb-1 text-left font-medium">judge</th>
+                <th className="pb-1 text-right font-medium">cost</th>
+                <th className="pb-1 text-right font-medium">latency</th>
+                <th className="pb-1 text-right font-medium">calls</th>
+              </tr>
+            </thead>
+            <tbody>
+              {judgeRows.map((r) => (
+                <tr key={r.id} className="border-t border-neutral-100">
+                  <td className="py-1 font-mono text-[10px] text-neutral-700">
+                    {r.id.split("/").slice(-1)[0]}
+                  </td>
+                  <td className="py-1 text-right font-mono">{formatCost(r.cost)}</td>
+                  <td className="py-1 text-right font-mono">{formatLatency(r.latency)}</td>
+                  <td className="py-1 text-right font-mono">{r.calls}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </RollupCard>
+      )}
+
+      {kappaRows.length > 0 && (
+        <RollupCard title="Inter-judge κ (per axis, run-level mean)">
+          <ul className="space-y-1 text-[11px]">
+            {kappaRows.map((r) => (
+              <li key={r.axis} className="flex items-center justify-between gap-2">
+                <span className="font-mono text-[10px] text-neutral-600">{r.axis}</span>
+                <KappaChip value={r.kappa} insufficientShare={r.insufficientShare} />
+              </li>
+            ))}
+          </ul>
+          <p className="mt-2 text-[10px] text-neutral-500">
+            κ &gt; 0.6 substantial · 0.4 moderate · 0.2 fair · &lt; 0.2 poor. Axes
+            with too few binary observations are marked "n/a".
+          </p>
+        </RollupCard>
+      )}
+
+      {harshness.length > 0 && (
+        <RollupCard title="Judge harshness (mean panel score / judge)">
+          <table className="w-full text-[11px]">
+            <thead className="text-neutral-500">
+              <tr>
+                <th className="pb-1 text-left font-medium">judge</th>
+                <th className="pb-1 text-right font-medium">mean</th>
+                <th className="pb-1 text-right font-medium">n</th>
+              </tr>
+            </thead>
+            <tbody>
+              {harshness.map((r) => (
+                <tr key={r.id} className="border-t border-neutral-100">
+                  <td className="py-1 font-mono text-[10px] text-neutral-700">
+                    {r.id.split("/").slice(-1)[0]}
+                  </td>
+                  <td className="py-1 text-right">
+                    <ScoreChip value={r.mean} />
+                  </td>
+                  <td className="py-1 text-right font-mono">{r.n}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <p className="mt-2 text-[10px] text-neutral-500">
+            Lower = harsher; same dataset, so persistent gaps indicate calibration drift.
+          </p>
+        </RollupCard>
+      )}
+    </section>
+  );
+}
+
+function RollupCard({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div className="rounded-lg border border-neutral-200 bg-white p-3">
+      <h3 className="mb-2 text-[10px] font-medium uppercase tracking-wide text-neutral-500">{title}</h3>
+      {children}
+    </div>
+  );
+}
+
+function KappaChip({ value, insufficientShare }: { value: number | null; insufficientShare: number }) {
+  if (value === null) {
+    return (
+      <span
+        className="inline-flex h-5 min-w-[2.5rem] items-center justify-center rounded bg-neutral-200 px-1 font-mono text-[11px] text-neutral-500"
+        title={`insufficient samples on ${(insufficientShare * 100).toFixed(0)}% of rows`}
+      >
+        n/a
+      </span>
+    );
+  }
+  const cls =
+    value >= 0.6 ? "bg-green-600 text-white"
+    : value >= 0.4 ? "bg-lime-500 text-white"
+    : value >= 0.2 ? "bg-amber-400 text-amber-950"
+    : "bg-red-600 text-white";
+  return (
+    <span className={`inline-flex h-5 min-w-[2.5rem] items-center justify-center rounded px-1 font-mono text-[11px] ${cls}`}>
+      {value.toFixed(2)}
+    </span>
+  );
+}
+
+type AxisPanel = {
+  aggregated_score: number | null;
+  agreement: { kappa_avg: number | null; kappa_status?: "ok" | "insufficient_samples" | "undefined" };
+  judges: { judge_id: string; score: number | null; status: "success" | "judge_failed" }[];
+};
+
+function eachPanel(payload: ResultsPayload, cb: (axis: string, panel: AxisPanel) => void) {
+  for (const row of payload.static_results) {
+    for (const side of ["oss", "frontier", "oss_guarded"] as const) {
+      const s = side === "oss_guarded" ? row.oss_guarded : row[side];
+      if (!s) continue;
+      for (const axis of STATIC_AXES_KEYS) {
+        cb(axis, s.scores[axis] as unknown as AxisPanel);
+      }
+    }
+  }
+  for (const row of payload.agent_results) {
+    for (const side of ["oss", "frontier", "oss_guarded"] as const) {
+      const s = side === "oss_guarded" ? row.oss_guarded : row[side];
+      if (!s) continue;
+      for (const axis of AGENT_AXES_KEYS) {
+        cb(axis, s.scores[axis] as unknown as AxisPanel);
+      }
+    }
+  }
+}
+
+function computeKappaRollup(
+  payload: ResultsPayload,
+): { axis: string; kappa: number | null; insufficientShare: number }[] {
+  const buckets = new Map<string, { vals: number[]; insufficient: number; total: number }>();
+  eachPanel(payload, (axis, panel) => {
+    const bucket = buckets.get(axis) ?? { vals: [], insufficient: 0, total: 0 };
+    bucket.total += 1;
+    if (panel.agreement.kappa_status === "insufficient_samples") {
+      bucket.insufficient += 1;
+    } else if (typeof panel.agreement.kappa_avg === "number") {
+      bucket.vals.push(panel.agreement.kappa_avg);
+    }
+    buckets.set(axis, bucket);
+  });
+  return Array.from(buckets.entries()).map(([axis, b]) => ({
+    axis,
+    kappa: b.vals.length > 0 ? b.vals.reduce((a, c) => a + c, 0) / b.vals.length : null,
+    insufficientShare: b.total > 0 ? b.insufficient / b.total : 0,
+  }));
+}
+
+function computeHarshness(payload: ResultsPayload): { id: string; mean: number; n: number }[] {
+  const buckets = new Map<string, { sum: number; n: number }>();
+  eachPanel(payload, (_axis, panel) => {
+    for (const j of panel.judges) {
+      if (j.status !== "success" || typeof j.score !== "number") continue;
+      const b = buckets.get(j.judge_id) ?? { sum: 0, n: 0 };
+      b.sum += j.score;
+      b.n += 1;
+      buckets.set(j.judge_id, b);
+    }
+  });
+  return Array.from(buckets.entries())
+    .map(([id, b]) => ({ id, mean: b.n > 0 ? b.sum / b.n : 0, n: b.n }))
+    .sort((a, b) => a.mean - b.mean);
 }
 
 function _agg(score: { aggregated_score: number | null }): number {

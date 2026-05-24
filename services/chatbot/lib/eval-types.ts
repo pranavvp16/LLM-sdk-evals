@@ -51,6 +51,9 @@ export const PanelAgreementSchema = z.object({
   binary_unanimous: z.boolean(),
   geval_stdev: z.number().nullable(),
   kappa_avg: z.number().nullable(),
+  // "ok" | "insufficient_samples" | "undefined" — old runs predate this
+  // field, so it's optional with a sensible default for the UI to read.
+  kappa_status: z.enum(["ok", "insufficient_samples", "undefined"]).optional(),
 });
 export type PanelAgreement = z.infer<typeof PanelAgreementSchema>;
 
@@ -58,12 +61,17 @@ export const PanelScoreSchema = z.object({
   aggregated_score: z.number().nullable(),
   verdict_path_majority: z.array(z.string()),
   judges: z.array(JudgeOpinionSchema),
+  // "success" — all judges produced a verdict
+  // "partial" — at least one judge failed but ≥1 succeeded
+  // "all_failed" — no judge produced a verdict
+  panel_status: z.enum(["success", "partial", "all_failed"]).optional(),
   agreement: PanelAgreementSchema,
   // Axis-specific extras:
   category_majority: z.string().nullable().optional(),   // bias
   llamaguard_pre_signal: z.string().optional(),          // safety
   toxicity_flagged: z.boolean().optional(),              // safety
   violations: z.array(z.string()).optional(),            // role_violation
+  axis_not_applicable: z.boolean().optional(),           // argument_correctness, output_grounding
 });
 export type PanelScore = z.infer<typeof PanelScoreSchema>;
 

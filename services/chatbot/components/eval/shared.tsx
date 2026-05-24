@@ -52,6 +52,26 @@ export function ScoreChip({ value, label }: { value: number | null | undefined; 
   );
 }
 
+/** Distinguishes "all judges failed" from "panel disagreed" in the UI. */
+export function PanelStatusBadge({ panel }: { panel: PanelScore }) {
+  const status = panel.panel_status ?? "success";
+  if (status === "success") return null;
+  const tone =
+    status === "all_failed"
+      ? { cls: "bg-red-100 text-red-700", label: "panel failed" }
+      : { cls: "bg-amber-100 text-amber-800", label: "partial" };
+  const succeeded = panel.judges.filter((j) => j.status === "success").length;
+  const total = panel.judges.length;
+  return (
+    <span
+      className={`inline-flex h-4 items-center rounded px-1 text-[9px] uppercase tracking-wide ${tone.cls}`}
+      title={`${succeeded}/${total} judges produced a verdict`}
+    >
+      {tone.label}
+    </span>
+  );
+}
+
 /** Agreement traffic light next to an aggregated score chip. */
 export function AgreementChip({ panel }: { panel: PanelScore }) {
   const agree = panel.agreement;
@@ -63,9 +83,14 @@ export function AgreementChip({ panel }: { panel: PanelScore }) {
       : !unanimous && stdev > 1.5
       ? { cls: "bg-red-100 text-red-700", label: "split" }
       : { cls: "bg-amber-100 text-amber-800", label: "mixed" };
+  const kappaStatus = agree.kappa_status ?? "ok";
   const tooltip =
     `binary_unanimous=${unanimous}` +
-    (agree.kappa_avg !== null ? ` · κ=${agree.kappa_avg.toFixed(2)}` : "") +
+    (kappaStatus !== "ok"
+      ? ` · κ=${kappaStatus}`
+      : agree.kappa_avg !== null
+      ? ` · κ=${agree.kappa_avg.toFixed(2)}`
+      : "") +
     (agree.geval_stdev !== null ? ` · σ=${agree.geval_stdev.toFixed(2)}` : "");
   return (
     <span
@@ -77,20 +102,35 @@ export function AgreementChip({ panel }: { panel: PanelScore }) {
   );
 }
 
-/** Stack of three per-judge mini-bars under an axis cell. */
+/** "N/A" indicator for axes that postprocess marked axis_not_applicable. */
+export function AxisNAChip({ panel }: { panel: PanelScore }) {
+  if (!panel.axis_not_applicable) return null;
+  return (
+    <span
+      title="No tool calls in this trajectory; this axis is not applicable and excluded from aggregate."
+      className="inline-flex h-4 items-center rounded bg-neutral-200 px-1 text-[9px] uppercase tracking-wide text-neutral-600"
+    >
+      n/a
+    </span>
+  );
+}
+
+/** Stack of three per-judge cards under an axis. All reasons are shown,
+ *  one per node — previously only the first non-empty reason rendered, which
+ *  collapsed the full DAG walk into one line. */
 export function JudgeStack({ judges }: { judges: JudgeOpinion[] }) {
   return (
     <ul className="space-y-1">
       {judges.map((j) => {
         const short = j.judge_id.split("/").slice(-1)[0];
-        const score = typeof j.score === "number" ? j.score.toFixed(1) : "—";
+        const reasonNodes = j.node_outputs.filter((n) => n.reason && n.reason.trim().length > 0);
         return (
           <li key={j.judge_id} className="rounded border border-neutral-200 bg-neutral-50 px-2 py-1 text-[11px]">
             <div className="flex items-center justify-between gap-2">
               <span className="font-mono text-[10px] text-neutral-600">{short}</span>
               <span className="flex items-center gap-1">
                 {j.status === "judge_failed" && (
-                  <span className="rounded bg-red-100 px-1 text-[9px] uppercase text-red-700">fail</span>
+                  <span className="rounded bg-red-100 px-1 text-[9px] uppercase text-red-700" title={j.error ?? "judge failed"}>fail</span>
                 )}
                 <ScoreChip value={typeof j.score === "number" ? j.score : null} />
               </span>
@@ -100,10 +140,20 @@ export function JudgeStack({ judges }: { judges: JudgeOpinion[] }) {
                 {j.verdict_path.join(" → ")}
               </p>
             )}
-            {j.node_outputs.some((n) => n.reason) && (
-              <p className="mt-1 whitespace-pre-wrap break-words text-[10px] leading-snug text-neutral-700">
-                {j.node_outputs.find((n) => n.reason)?.reason}
-              </p>
+            {reasonNodes.length > 0 && (
+              <ul className="mt-1 space-y-1">
+                {reasonNodes.map((n, i) => (
+                  <li key={`${n.node}-${i}`} className="leading-snug">
+                    <span className="font-mono text-[9px] text-neutral-500">{n.node}:</span>{" "}
+                    <span className="whitespace-pre-wrap break-words text-[10px] text-neutral-700">
+                      {n.reason}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+            {j.status === "judge_failed" && j.error && reasonNodes.length === 0 && (
+              <p className="mt-1 text-[10px] text-red-700">err: {j.error}</p>
             )}
           </li>
         );
