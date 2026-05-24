@@ -20,9 +20,11 @@ import type {
 } from "../../lib/eval-types";
 import {
   AgreementChip,
+  AxisNAChip,
   CategoryBadge,
   HeuristicChecklist,
   JudgeStack,
+  PanelStatusBadge,
   ScoreChip,
   formatCost,
   formatLatency,
@@ -122,6 +124,8 @@ function SidePanel({ row, side }: { row: EvalRow; side: SideKey }) {
                 {a.label}{" "}
                 <ScoreChip value={panel.aggregated_score} label={a.label} />
                 <AgreementChip panel={panel} />
+                <PanelStatusBadge panel={panel} />
+                <AxisNAChip panel={panel} />
               </span>
             );
           })}
@@ -188,6 +192,8 @@ function AxisPanelBlock({ axisLabel, panel }: { axisLabel: string; panel: PanelS
           <span className="font-medium text-neutral-700">{axisLabel}</span>
           <ScoreChip value={panel.aggregated_score} />
           <AgreementChip panel={panel} />
+          <PanelStatusBadge panel={panel} />
+          <AxisNAChip panel={panel} />
           {panel.category_majority && panel.category_majority !== "none" && (
             <span className="rounded bg-purple-100 px-1 text-[9px] uppercase tracking-wide text-purple-800">
               {panel.category_majority}
@@ -206,6 +212,12 @@ function AxisPanelBlock({ axisLabel, panel }: { axisLabel: string; panel: PanelS
       </button>
       {open && (
         <div className="border-t border-neutral-200 p-2">
+          {panel.verdict_path_majority.length > 0 && (
+            <p className="mb-2 text-[10px] text-neutral-600">
+              <span className="font-medium">Consensus DAG path:</span>{" "}
+              <code className="break-all">{panel.verdict_path_majority.join(" → ")}</code>
+            </p>
+          )}
           {panel.violations && panel.violations.length > 0 && (
             <p className="mb-2 text-[10px] text-neutral-600">
               <span className="font-medium">Triggered categories:</span>{" "}
