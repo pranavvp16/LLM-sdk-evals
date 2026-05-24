@@ -101,7 +101,7 @@ export function JudgeStack({ judges }: { judges: JudgeOpinion[] }) {
               </p>
             )}
             {j.node_outputs.some((n) => n.reason) && (
-              <p className="mt-1 text-[10px] leading-snug text-neutral-700">
+              <p className="mt-1 whitespace-pre-wrap break-words text-[10px] leading-snug text-neutral-700">
                 {j.node_outputs.find((n) => n.reason)?.reason}
               </p>
             )}
