@@ -78,8 +78,11 @@ export function PromptDetail({ row }: { row: EvalRow }) {
         </details>
       </header>
 
+      {/* No `items-start`: cells default to stretch on lg so every SidePanel
+          shares the row height, which lets `lg:divide-x` draw the column
+          separator the full height of the tallest panel. */}
       <div
-        className={`grid grid-cols-1 items-start divide-y divide-neutral-200 lg:divide-x lg:divide-y-0 ${
+        className={`grid grid-cols-1 divide-y divide-neutral-200 lg:divide-x lg:divide-y-0 ${
           row.oss_guarded ? "lg:grid-cols-3" : "lg:grid-cols-2"
         }`}
       >
@@ -108,8 +111,10 @@ function SidePanel({ row, side }: { row: EvalRow; side: SideKey }) {
   const scores = data.scores as StaticScores | AgentScores;
 
   return (
+    // `lg:top-3` matches the EvalBrowser prompt-list's sticky offset so the
+    // two sticky elements line up at the same visual baseline.
     <div className="flex min-w-0 flex-col">
-      <header className="sticky top-0 z-10 border-b border-neutral-200 bg-white px-4 py-2">
+      <header className="sticky top-0 z-10 border-b border-neutral-200 bg-white px-4 py-2 lg:top-3">
         <div className="flex items-center justify-between">
           <span className="text-xs font-medium uppercase tracking-wide text-neutral-500">
             {SIDE_LABEL[side]}
