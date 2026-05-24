@@ -126,7 +126,11 @@ export function EvalBrowser() {
   }
 
   return (
-    <div className="flex min-h-[60dvh] flex-col gap-3 lg:h-[calc(100vh-8rem)]">
+    // No viewport-height cap — the whole page scrolls naturally so the
+    // rollup cards, prompt list, and prompt detail can all be reached.
+    // On lg the prompt list is sticky to the viewport so it stays usable
+    // as the user scrolls through a long detail pane.
+    <div className="flex flex-col gap-3">
       <Header
         payload={payload}
         run={run}
@@ -141,8 +145,8 @@ export function EvalBrowser() {
       {!payload ? (
         <EmptyState onRun={onRun} runErr={runErr} run={run} />
       ) : (
-        <div className="grid min-h-0 flex-1 grid-cols-1 overflow-hidden rounded-lg border border-neutral-200 lg:grid-cols-[18rem_1fr] lg:grid-rows-[minmax(0,1fr)]">
-          <div className={`min-h-0 ${mobileShowDetail ? "hidden lg:block" : "block"}`}>
+        <div className="grid grid-cols-1 items-start rounded-lg border border-neutral-200 lg:grid-cols-[18rem_1fr]">
+          <div className={`${mobileShowDetail ? "hidden lg:block" : "block"} lg:sticky lg:top-3 lg:max-h-[calc(100vh-2rem)] lg:self-start lg:overflow-y-auto`}>
             <PromptList
               rows={rows}
               selectedId={selected?.prompt_id ?? null}
@@ -152,7 +156,7 @@ export function EvalBrowser() {
               }}
             />
           </div>
-          <div className={`min-h-0 overflow-hidden bg-white ${mobileShowDetail ? "block" : "hidden lg:block"}`}>
+          <div className={`bg-white ${mobileShowDetail ? "block" : "hidden lg:block"}`}>
             {selected ? (
               <>
                 <MobileBackButton onClick={() => setMobileShowDetail(false)} />
